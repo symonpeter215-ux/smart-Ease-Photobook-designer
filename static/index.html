@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Ease Subscription & Revenue Manager</title>
+  <link rel="stylesheet" href="/static/styles.css?v=2.2">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Top Bar -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="brand-logo">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+          </svg>
+        </div>
+        <div class="brand-info">
+          <h1>Smart Ease Subscription Manager</h1>
+          <span class="sub-title">Admin Console &bull; Photobook Designer &amp; Ease Select</span>
+        </div>
+      </div>
+
+      <div class="header-center">
+        <nav class="nav-tabs">
+          <button class="nav-tab active" data-tab="dashboard">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+            Dashboard
+          </button>
+          <button class="nav-tab" data-tab="users">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            Users
+          </button>
+          <button class="nav-tab" data-tab="packages">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
+            Packages
+          </button>
+          <button class="nav-tab" data-tab="subscriptions">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            Subscriptions
+          </button>
+          <button class="nav-tab" data-tab="revenue">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            Revenue &amp; Earnings
+          </button>
+          <button class="nav-tab" data-tab="connected-apps">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            Connected Apps
+          </button>
+        </nav>
+      </div>
+
+      <div class="header-right">
+        <button class="btn btn-secondary btn-sm" id="btnSyncApps" title="Scan & Sync local Photobook & Ease Select identities">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          Sync Apps
+        </button>
+        <button class="btn btn-primary btn-sm" id="btnRecordPayment">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Record Payment
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="main-body">
+
+      <!-- ============================================== -->
+      <!-- TAB 1: DASHBOARD                               -->
+      <!-- ============================================== -->
+      <section id="tab-dashboard" class="tab-panel active">
+        <!-- 8 Summary KPI Cards -->
+        <div class="kpi-grid">
+          <!-- Card 1: Total Registered Users -->
+          <div class="kpi-card">
+            <div class="kpi-icon icon-blue">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            </div>
+            <div class="kpi-meta">
+              <span class="kpi-label">Total Registered Users</span>
+              <div class="kpi-value" id="kpiTotalUsers">-</div>
+              <span class="kpi-hint">All unique customers</span>
+            </div>
+          </div>
+
+          <!-- Card 2: Active Subscriptions -->
+          <div class="kpi-card">
+            <div class="kpi-icon icon-emerald">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+            </div>
+            <div class="kpi-meta">
+              <span class="kpi-label">Active Subscriptions</span>
+              <div class="kpi-value" id="kpiActiveSubs">-</div>
+              <span class="kpi-hint">Valid active access</span>
+            </div>
+          </div>
+
+          <!-- Card 3: Expiring Soon -->
+          <div class="kpi-card kpi-warning">
+            <div class="kpi-icon icon-amber">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            </div>
+            <div class="kpi-meta">
+              <span class="kpi-label">Expiring Soon</span>
+              <div class="kpi-value text-amber" id="kpiExpiringSoon">-</div>
+              <span class="kpi-hint">Within next 7 days</span>
+            </div>
+          </div>
+
+          <!-- Card 4: Expired Subscriptions -->
+          <div class="kpi-card kpi-danger">
+            <div class="kpi-icon icon-red">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            </div>
+            <div class="kpi-meta">
+              <span class="kpi-label">Expired Subscriptions</span>
+              <div class="kpi-value text-red" id="kpiExpiredSubs">-</div>
+              <span class="kpi-hint">Past expiration date</span>
+            </div>
+          </div>
+
+          <!-- Card 5: Today's Earnings -->
+          <div class="kpi-card">
+            <div class="kpi-icon icon-teal">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            </div>
+            <div class="kpi-meta">
+              <span class="kpi-label">Today's Earnings</span>
+              <div class="kpi-value text-teal" id="kpiTodayEarnings">$0.00</div>
+              <span class="kpi-hint" id="kpiTodayTxCount">0 verified payments</span>
+            </div>
+          </div>
+
+          <!-- Card 6: This Month's Earnings -->
+          <div class="kpi-card">
+            <div class="kpi-icon icon-indigo">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            </div>
+            <div class="kpi-meta">
+              <span class="kpi-label">This Month's Earnings</span>
+              <div class="kpi-value text-indigo" id="kpiMonthEarnings">$0.00</div>
+              <span class="kpi-hint" id="kpiMonthTxCount">0 verified payments</span>
+            </div>
+          </div>
+
+          <!-- Card 7: Lifetime Revenue -->
+          <div class="kpi-card">
+            <div class="kpi-icon icon-purple">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            </div>
+            <div class="kpi-meta">
+              <span class="kpi-label">Lifetime Revenue</span>
+              <div class="kpi-value text-purple" id="kpiLifetimeRev">$0.00</div>
+              <span class="kpi-hint">Net recorded collections</span>
+            </div>
+          </div>
+
+          <!-- Card 8: Lifetime Pro Users -->
+          <div class="kpi-card">
+            <div class="kpi-icon icon-gold">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+            </div>
+            <div class="kpi-meta">
+              <span class="kpi-label">Lifetime Pro Users</span>
+              <div class="kpi-value text-gold" id="kpiLifetimePro">-</div>
+              <span class="kpi-hint">Permanent $200 licences</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- App Subscription Model Breakdown Banner (Both Apps vs Independent Subscriptions) -->
+        <div class="card app-breakdown-card mb-24" style="margin-bottom: 24px;">
+          <div class="card-header flex-between">
+            <div>
+              <h2 class="card-title">App Subscription Breakdown &bull; Both Apps vs Independent Subscriptions</h2>
+              <p class="card-subtitle">Monitor customers using both products together vs independent single-app subscriptions</p>
+            </div>
+            <button class="btn btn-secondary btn-xs" id="btnGoToUsersBoth">View Both Apps Users &rarr;</button>
+          </div>
+          <div class="card-body">
+            <div class="breakdown-chips-grid">
+              <!-- Chip 1: Both Apps (All Models) -->
+              <div class="chip-card chip-both" id="chipFilterBoth">
+                <div class="chip-top">
+                  <span class="chip-badge badge-purple">Both Apps</span>
+                  <span class="chip-count" id="countBothAppsTotal">-</span>
+                </div>
+                <div class="chip-title">Total Using Both Apps</div>
+                <div class="chip-desc">Bundle ($3) + Lifetime ($200) + Dual Independent</div>
+              </div>
+
+              <!-- Chip 2: Independent Photobook -->
+              <div class="chip-card chip-pb" id="chipFilterPb">
+                <div class="chip-top">
+                  <span class="chip-badge badge-blue">Independent App</span>
+                  <span class="chip-count" id="countIndPhotobook">-</span>
+                </div>
+                <div class="chip-title">Photobook (Independent)</div>
+                <div class="chip-desc">Single-app standalone subscriptions ($2.45/mo)</div>
+              </div>
+
+              <!-- Chip 3: Independent Ease Select -->
+              <div class="chip-card chip-es" id="chipFilterEs">
+                <div class="chip-top">
+                  <span class="chip-badge badge-teal">Independent App</span>
+                  <span class="chip-count" id="countIndEaseSelect">-</span>
+                </div>
+                <div class="chip-title">Ease Select (Independent)</div>
+                <div class="chip-desc">Single-app standalone subscriptions ($2.45/mo)</div>
+              </div>
+
+              <!-- Chip 4: Dual Independent Subscriptions -->
+              <div class="chip-card chip-dual" id="chipFilterDual">
+                <div class="chip-top">
+                  <span class="chip-badge badge-indigo">2 Separate Subs</span>
+                  <span class="chip-count" id="countBothDualInd">-</span>
+                </div>
+                <div class="chip-title">Dual Independent (2 Subs)</div>
+                <div class="chip-desc">Customers paying separate subs for each app</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Revenue Chart Card -->
+        <div class="card chart-card">
+          <div class="card-header flex-between">
+            <div>
+              <h2 class="card-title">Daily Revenue Overview</h2>
+              <p class="card-subtitle">Verified daily earnings across the calendar month</p>
+            </div>
+            <div class="chart-controls flex-gap">
+              <button class="btn btn-secondary btn-xs" id="btnPrevMonth">&larr; Prev Month</button>
+              <span class="current-month-display" id="chartMonthLabel">Current Month</span>
+              <button class="btn btn-secondary btn-xs" id="btnNextMonth">Next Month &rarr;</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <!-- Chart Container -->
+            <div class="chart-wrapper" id="revenueChartContainer">
+              <div class="chart-svg-host" id="chartSvgHost"></div>
+            </div>
+            <div class="chart-legend flex-between">
+              <div class="flex-gap legend-items">
+                <span class="legend-dot dot-photobook"></span> Photobook Designer ($2.45)
+                <span class="legend-dot dot-bundle"></span> Dual Bundle ($3.00)
+                <span class="legend-dot dot-ease"></span> Ease Select ($2.45)
+                <span class="legend-dot dot-life"></span> Lifetime Pro ($200.00)
+              </div>
+              <div class="month-stat-summary" id="chartStatSummary">
+                Total Month Net: <strong>$0.00</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recent Transactions Strip -->
+        <div class="card mt-20">
+          <div class="card-header flex-between">
+            <div>
+              <h3 class="card-title">Latest Verified Transactions</h3>
+              <p class="card-subtitle">Real-time incoming payment events</p>
+            </div>
+            <button class="btn btn-link btn-sm" id="btnViewAllTxns">View All Transactions &rarr;</button>
+          </div>
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Date &amp; Time</th>
+                  <th>Customer</th>
+                  <th>Product / Package</th>
+                  <th>Amount</th>
+                  <th>Provider</th>
+                  <th>Reference</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="recentTransactionsBody">
+                <tr><td colspan="7" class="text-center text-muted">Loading transactions...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================== -->
+      <!-- TAB 2: USER MANAGEMENT                         -->
+      <!-- ============================================== -->
+      <section id="tab-users" class="tab-panel">
+        <div class="card">
+          <div class="card-header flex-between flex-wrap gap-12">
+            <div>
+              <h2 class="card-title">User Management</h2>
+              <p class="card-subtitle">Inspect registered customers, subscription status, and payment records</p>
+            </div>
+            <div class="flex-gap">
+              <button class="btn btn-secondary btn-sm" id="btnExportUsersCsv">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Export CSV
+              </button>
+              <button class="btn btn-primary btn-sm" id="btnAddUserModal">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Add Customer
+              </button>
+            </div>
+          </div>
+
+          <!-- Search & Filter Bar -->
+          <div class="filters-bar">
+            <div class="search-box">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input type="text" id="userSearchInput" placeholder="Search customer name, email, or account ID...">
+            </div>
+
+            <!-- Product Filter -->
+            <div class="filter-item">
+              <label for="filterProduct">Product:</label>
+              <select id="filterProduct" class="select-control">
+                <option value="all">All Products</option>
+                <option value="photobook">Smart Ease Photobook Designer</option>
+                <option value="ease_select">Ease Select</option>
+                <option value="both">Both Products (Bundle / Pro)</option>
+                <option value="none">Free / Unlicensed</option>
+              </select>
+            </div>
+
+            <!-- Subscription Model (Both Apps vs Independent) Filter -->
+            <div class="filter-item">
+              <label for="filterSubModel">Subscription Model:</label>
+              <select id="filterSubModel" class="select-control highlight-select">
+                <option value="all">All Models (Both &amp; Independent)</option>
+                <optgroup label="Both Applications">
+                  <option value="both">Both Apps &bull; All Models</option>
+                  <option value="both_bundle">Both Apps &bull; Dual Bundle ($3.00)</option>
+                  <option value="both_lifetime">Both Apps &bull; Lifetime Pro ($200.00)</option>
+                  <option value="both_independent">Both Apps &bull; Dual Independent Subs (2 Separate)</option>
+                </optgroup>
+                <optgroup label="Independent Single-App Subscriptions">
+                  <option value="independent">All Independent Subscriptions</option>
+                  <option value="independent_photobook">Independent &bull; Photobook Designer ($2.45)</option>
+                  <option value="independent_ease_select">Independent &bull; Ease Select ($2.45)</option>
+                </optgroup>
+                <optgroup label="Unlicensed">
+                  <option value="free">Free / Unlicensed</option>
+                </optgroup>
+              </select>
+            </div>
+
+            <!-- Status Filter -->
+            <div class="filter-item">
+              <label for="filterStatus">Status:</label>
+              <select id="filterStatus" class="select-control">
+                <option value="all">All Statuses</option>
+                <option value="active">Active Subscriptions</option>
+                <option value="expiring_soon">Expiring within 7 Days</option>
+                <option value="expired">Expired Subscriptions</option>
+                <option value="lifetime">Lifetime Pro</option>
+                <option value="free">Free / Unlicensed</option>
+              </select>
+            </div>
+
+            <button class="btn btn-secondary btn-sm" id="btnResetUserFilters">Reset Filters</button>
+          </div>
+
+          <!-- Users Table -->
+          <div class="table-responsive">
+            <table class="data-table users-table">
+              <thead>
+                <tr>
+                  <th>Full Name</th>
+                  <th>Email / Customer ID</th>
+                  <th>Smart Ease Account ID</th>
+                  <th>Subscription Model</th>
+                  <th>Product Owned</th>
+                  <th>Package Name</th>
+                  <th>Subscription Start</th>
+                  <th>Subscription Expiry</th>
+                  <th>Status</th>
+                  <th>Amount Paid</th>
+                  <th>Last Payment</th>
+                  <th>Next Renewal</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="usersTableBody">
+                <tr><td colspan="13" class="text-center text-muted">Loading users...</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="table-footer flex-between">
+            <span class="text-muted" id="userCountSummary">Showing 0 users</span>
+            <span class="text-hint">Click any user row to view complete subscription &amp; payment history</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================== -->
+      <!-- TAB 3: PRODUCT & PACKAGE MANAGEMENT            -->
+      <!-- ============================================== -->
+      <section id="tab-packages" class="tab-panel">
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Product &amp; Package Management</h2>
+            <p class="card-subtitle">Configure package pricing, view customer adoption, and monitor revenue per tier</p>
+          </div>
+
+          <div class="packages-grid" id="packagesGrid">
+            <!-- Rendered dynamically by app.js -->
+          </div>
+
+          <div class="info-alert mt-24">
+            <div class="alert-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+            </div>
+            <div class="alert-content">
+              <strong>Admin Configuration Rules:</strong>
+              Package prices can be updated directly from this console without touching source code.
+              <strong>Lifetime Pro</strong> is permanently configured as a one-time purchase with permanent license access and will never be billed as a recurring subscription.
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================== -->
+      <!-- TAB 4: SUBSCRIPTION TRACKING                   -->
+      <!-- ============================================== -->
+      <section id="tab-subscriptions" class="tab-panel">
+        <div class="card">
+          <div class="card-header flex-between flex-wrap gap-12">
+            <div>
+              <h2 class="card-title">Subscription Tracking</h2>
+              <p class="card-subtitle">Real-time lifecycle monitoring, status determination, and renewal management</p>
+            </div>
+            <div class="flex-gap align-center flex-wrap">
+              <div class="filter-item">
+                <label for="filterSubAccessType">Access Model:</label>
+                <select id="filterSubAccessType" class="select-control highlight-select">
+                  <option value="all">All Models</option>
+                  <option value="independent">All Independent Subscriptions</option>
+                  <option value="independent_photobook">Independent &bull; Photobook ($2.45)</option>
+                  <option value="independent_ease_select">Independent &bull; Ease Select ($2.45)</option>
+                  <option value="bundle">Both Apps &bull; Dual Bundle ($3.00)</option>
+                  <option value="lifetime">Both Apps &bull; Lifetime Pro ($200.00)</option>
+                </select>
+              </div>
+              <div class="filter-item">
+                <label for="filterSubStatus">Status:</label>
+                <select id="filterSubStatus" class="select-control">
+                  <option value="all">All Statuses</option>
+                  <option value="Active">Active</option>
+                  <option value="Expiring Soon">Expiring Soon</option>
+                  <option value="Expired">Expired</option>
+                  <option value="Lifetime">Lifetime</option>
+                  <option value="Cancelled">Cancelled</option>
+                  <option value="Payment Pending">Payment Pending</option>
+                  <option value="Payment Failed">Payment Failed</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Subscription ID</th>
+                  <th>Customer</th>
+                  <th>Product / Package</th>
+                  <th>Access Model</th>
+                  <th>Start Date &amp; Time</th>
+                  <th>Expiry Date &amp; Time</th>
+                  <th>Billing Interval</th>
+                  <th>Subscription Status</th>
+                  <th>Payment Status</th>
+                  <th>Next Renewal</th>
+                  <th>Last Payment</th>
+                  <th>Tx Reference</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="subscriptionsTableBody">
+                <tr><td colspan="12" class="text-center text-muted">Loading subscriptions...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================== -->
+      <!-- TAB 5: DAILY AND MONTHLY EARNINGS              -->
+      <!-- ============================================== -->
+      <section id="tab-revenue" class="tab-panel">
+        <!-- Daily Earnings Breakdown -->
+        <div class="card">
+          <div class="card-header flex-between flex-wrap gap-12">
+            <div>
+              <h2 class="card-title">Daily Earnings Breakdown</h2>
+              <p class="card-subtitle">Verified payments received on selected date</p>
+            </div>
+            <div class="flex-gap align-center">
+              <label for="dailyDatePicker" class="date-label">Inspect Date:</label>
+              <input type="date" id="dailyDatePicker" class="date-control">
+              <button class="btn btn-secondary btn-sm" id="btnTodayDate">Today</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="earnings-grid">
+              <div class="earn-box">
+                <span class="earn-label">Total Verified Today</span>
+                <span class="earn-val text-teal" id="dailyTotalVerified">$0.00</span>
+                <span class="earn-sub" id="dailyTxCount">0 successful transactions</span>
+              </div>
+              <div class="earn-box">
+                <span class="earn-label">Photobook Designer</span>
+                <span class="earn-val" id="dailyRevPhotobook">$0.00</span>
+                <span class="earn-sub">$2.45 tier</span>
+              </div>
+              <div class="earn-box">
+                <span class="earn-label">Ease Select</span>
+                <span class="earn-val" id="dailyRevEaseSelect">$0.00</span>
+                <span class="earn-sub">$2.45 tier</span>
+              </div>
+              <div class="earn-box">
+                <span class="earn-label">Combined Packages</span>
+                <span class="earn-val" id="dailyRevCombined">$0.00</span>
+                <span class="earn-sub">$3.00 bundle tier</span>
+              </div>
+              <div class="earn-box">
+                <span class="earn-label">Lifetime Pro</span>
+                <span class="earn-val text-gold" id="dailyRevLifetime">$0.00</span>
+                <span class="earn-sub">$200.00 permanent licence</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Monthly Earnings Breakdown -->
+        <div class="card mt-20">
+          <div class="card-header flex-between flex-wrap gap-12">
+            <div>
+              <h2 class="card-title">Monthly Earnings Breakdown</h2>
+              <p class="card-subtitle">Performance breakdown for selected calendar month</p>
+            </div>
+            <div class="flex-gap align-center">
+              <label for="monthlyMonthPicker" class="date-label">Select Month:</label>
+              <input type="month" id="monthlyMonthPicker" class="date-control">
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="monthly-summary-cards">
+              <div class="summary-metric">
+                <span class="sm-label">Gross Collections</span>
+                <span class="sm-val text-indigo" id="monthGrossCollections">$0.00</span>
+              </div>
+              <div class="summary-metric">
+                <span class="sm-label">Refunds &amp; Chargebacks</span>
+                <span class="sm-val text-red" id="monthRefunds">$0.00</span>
+              </div>
+              <div class="summary-metric">
+                <span class="sm-label">Processing Fees</span>
+                <span class="sm-val text-muted" id="monthProcessingFees">$0.00</span>
+              </div>
+              <div class="summary-metric highlight">
+                <span class="sm-label">Net Recorded Revenue</span>
+                <span class="sm-val text-emerald" id="monthNetRevenue">$0.00</span>
+              </div>
+            </div>
+
+            <div class="monthly-breakdown-details mt-16">
+              <div class="breakdown-col">
+                <h4>Revenue by Product &amp; Package</h4>
+                <div class="breakdown-row"><span>Smart Ease Photobook:</span> <strong id="mRevPhotobook">$0.00</strong></div>
+                <div class="breakdown-row"><span>Ease Select:</span> <strong id="mRevEaseSelect">$0.00</strong></div>
+                <div class="breakdown-row"><span>Dual Bundle (+):</span> <strong id="mRevBundle">$0.00</strong></div>
+                <div class="breakdown-row"><span>Lifetime Pro:</span> <strong id="mRevLifetime">$0.00</strong></div>
+              </div>
+              <div class="breakdown-col">
+                <h4>Revenue by Billing Type</h4>
+                <div class="breakdown-row"><span>Recurring Subscriptions:</span> <strong id="mRevRecurring">$0.00</strong></div>
+                <div class="breakdown-row"><span>Lifetime Purchases:</span> <strong id="mRevLifetimeType">$0.00</strong></div>
+                <div class="breakdown-row"><span>Total Transactions:</span> <strong id="mTotalTransactions">0</strong></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Transactions History Table -->
+        <div class="card mt-20">
+          <div class="card-header flex-between flex-wrap gap-12">
+            <div>
+              <h3 class="card-title">All Transactions</h3>
+              <p class="card-subtitle">Verified payment records with full audit trail</p>
+            </div>
+            <div class="flex-gap">
+              <select id="filterTxProvider" class="select-control">
+                <option value="all">All Providers</option>
+                <option value="Stripe">Stripe</option>
+                <option value="PayPal">PayPal</option>
+                <option value="Flutterwave">Flutterwave</option>
+                <option value="Pesapal">Pesapal</option>
+                <option value="Manual">Manual / Cash</option>
+              </select>
+            </div>
+          </div>
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Date &amp; Time</th>
+                  <th>Customer</th>
+                  <th>Product / Package</th>
+                  <th>Gross Amount</th>
+                  <th>Net Amount</th>
+                  <th>Payment Status</th>
+                  <th>Provider</th>
+                  <th>Transaction Reference</th>
+                </tr>
+              </thead>
+              <tbody id="allTransactionsTableBody">
+                <tr><td colspan="8" class="text-center text-muted">Loading transactions...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================== -->
+      <!-- TAB 6: CONNECTED SMART EASE APPLICATIONS       -->
+      <!-- ============================================== -->
+      <section id="tab-connected-apps" class="tab-panel">
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Connected Smart Ease Applications</h2>
+            <p class="card-subtitle">Monitor and sync customer data from your Photobook and Ease Select desktop installations</p>
+          </div>
+
+          <div class="connected-apps-grid">
+            <!-- App 1: Smart Ease Photobook Designer -->
+            <div class="app-connection-card">
+              <div class="app-header-strip">
+                <div class="app-icon icon-photobook">PB</div>
+                <div>
+                  <h3>Smart Ease Photobook Designer</h3>
+                  <span class="app-port-badge">Port 8765 &bull; Local Desktop</span>
+                </div>
+                <span class="status-indicator" id="statusPbIndicator">Checking...</span>
+              </div>
+              <div class="app-card-body">
+                <div class="info-line"><strong>Install Directory:</strong> <code>D:\Antigravity\photobook\version zero</code></div>
+                <div class="info-line"><strong>Identity Store:</strong> <code>%APPDATA%\SmartEasePhotobookStudio</code></div>
+                <div class="info-line"><strong>Server Status:</strong> <span id="txtPbServerStatus">Standby</span></div>
+                <div class="info-line"><strong>Detected Active Profile:</strong> <span id="txtPbUserProfile">Scanning...</span></div>
+              </div>
+              <div class="app-card-footer">
+                <button class="btn btn-secondary btn-sm" id="btnTestPbConnection">Test Connection</button>
+              </div>
+            </div>
+
+            <!-- App 2: Ease Select -->
+            <div class="app-connection-card">
+              <div class="app-header-strip">
+                <div class="app-icon icon-ease">ES</div>
+                <div>
+                  <h3>Ease Select</h3>
+                  <span class="app-port-badge">Port 8098 &bull; Local Desktop</span>
+                </div>
+                <span class="status-indicator" id="statusEsIndicator">Checking...</span>
+              </div>
+              <div class="app-card-body">
+                <div class="info-line"><strong>Install Directory:</strong> <code>D:\Antigravity\PixSelect</code></div>
+                <div class="info-line"><strong>Application Store:</strong> <code>%APPDATA%\SmartEase</code></div>
+                <div class="info-line"><strong>Server Status:</strong> <span id="txtEsServerStatus">Standby</span></div>
+                <div class="info-line"><strong>Sync Integration:</strong> <span>Ready for REST calls</span></div>
+              </div>
+              <div class="app-card-footer">
+                <button class="btn btn-secondary btn-sm" id="btnTestEsConnection">Test Connection</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Instant Local Scanner Box -->
+          <div class="sync-banner mt-24">
+            <div class="sync-banner-text">
+              <h3>One-Click Local App Auto-Discovery</h3>
+              <p>Automatically scans Photobook's local identity profiles, checks account tokens, and adds or refreshes registered customers in this Subscription Manager.</p>
+            </div>
+            <button class="btn btn-primary" id="btnTriggerAutoSync">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+              Scan &amp; Sync Local Apps Now
+            </button>
+          </div>
+
+          <!-- Live License Verification Test Tool -->
+          <div class="card mt-24">
+            <div class="card-header">
+              <h3 class="card-title">Live Client License Verification Tester</h3>
+              <p class="card-subtitle">Test how Photobook Designer or Ease Select validates access through the Subscription Manager API</p>
+            </div>
+            <div class="card-body">
+              <div class="flex-gap align-center flex-wrap">
+                <input type="text" id="testAccountIdInput" class="text-input" placeholder="Enter Account ID or Email (e.g. a6c0fee1d5422ef8)" style="flex:1; min-width:280px;">
+                <select id="testProductSelect" class="select-control">
+                  <option value="photobook">Smart Ease Photobook Designer</option>
+                  <option value="ease_select">Ease Select</option>
+                </select>
+                <button class="btn btn-secondary" id="btnRunLicenseTest">Verify License</button>
+              </div>
+              <div id="licenseTestResult" class="test-result-box mt-16" style="display:none;"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ============================================== -->
+  <!-- MODAL: USER DETAIL VIEW                        -->
+  <!-- ============================================== -->
+  <div class="modal-backdrop" id="modalUserDetail">
+    <div class="modal-card modal-lg">
+      <div class="modal-header flex-between">
+        <div>
+          <h3 class="modal-title" id="mudUserName">Customer Profile</h3>
+          <span class="text-muted" id="mudAccountBadge">SE-00000</span>
+        </div>
+        <button class="modal-close" id="btnCloseUserDetail">&times;</button>
+      </div>
+      <div class="modal-body" id="mudContent">
+        <!-- Injected dynamically -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================== -->
+  <!-- MODAL: RECORD PAYMENT                          -->
+  <!-- ============================================== -->
+  <div class="modal-backdrop" id="modalRecordPayment">
+    <div class="modal-card">
+      <div class="modal-header flex-between">
+        <h3 class="modal-title">Record Payment &amp; Subscription</h3>
+        <button class="modal-close" id="btnCloseRecordPayment">&times;</button>
+      </div>
+      <form id="formRecordPayment" class="modal-body">
+        <div class="form-group">
+          <label>Customer:</label>
+          <select id="payUserSelect" class="select-control w-100" required>
+            <option value="">Select customer...</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Package / License:</label>
+          <select id="payPackageSelect" class="select-control w-100" required>
+            <option value="pkg_photobook">Smart Ease Photobook Designer ($2.45 / mo)</option>
+            <option value="pkg_bundle">Smart Ease Photobook Designer + Ease Select ($3.00 / mo)</option>
+            <option value="pkg_ease_select">Ease Select ($2.45 / mo)</option>
+            <option value="pkg_lifetime">Lifetime Pro ($200.00 Permanent)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Amount Paid (USD):</label>
+          <input type="number" step="0.01" id="payAmountInput" class="text-input w-100" value="2.45" required>
+        </div>
+        <div class="form-group">
+          <label>Payment Provider:</label>
+          <select id="payProviderSelect" class="select-control w-100">
+            <option value="Stripe">Stripe</option>
+            <option value="PayPal">PayPal</option>
+            <option value="Flutterwave">Flutterwave</option>
+            <option value="Pesapal">Pesapal</option>
+            <option value="Manual">Manual / Bank / Cash</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Transaction Reference:</label>
+          <input type="text" id="payRefInput" class="text-input w-100" placeholder="e.g. ch_3Pz... or manual note">
+        </div>
+        <div class="modal-footer flex-end flex-gap mt-16">
+          <button type="button" class="btn btn-secondary" id="btnCancelPayment">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save &amp; Grant Access</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============================================== -->
+  <!-- MODAL: ADD CUSTOMER                            -->
+  <!-- ============================================== -->
+  <div class="modal-backdrop" id="modalAddUser">
+    <div class="modal-card">
+      <div class="modal-header flex-between">
+        <h3 class="modal-title">Register New Customer</h3>
+        <button class="modal-close" id="btnCloseAddUser">&times;</button>
+      </div>
+      <form id="formAddUser" class="modal-body">
+        <div class="form-group">
+          <label>Customer Full Name *</label>
+          <input type="text" id="addFullName" class="text-input w-100" required placeholder="e.g. John Doe">
+        </div>
+        <div class="form-group">
+          <label>Email Address</label>
+          <input type="email" id="addEmail" class="text-input w-100" placeholder="e.g. john@studio.com">
+        </div>
+        <div class="form-group">
+          <label>Smart Ease Account ID (Optional)</label>
+          <input type="text" id="addAccountId" class="text-input w-100" placeholder="Leave blank to auto-generate">
+        </div>
+        <div class="form-group">
+          <label>Initial Product</label>
+          <select id="addProductOwned" class="select-control w-100">
+            <option value="Smart Ease Photobook Designer">Smart Ease Photobook Designer</option>
+            <option value="Ease Select">Ease Select</option>
+            <option value="Both products">Both Products</option>
+            <option value="None">None (Unlicensed / Free)</option>
+          </select>
+        </div>
+        <div class="modal-footer flex-end flex-gap mt-16">
+          <button type="button" class="btn btn-secondary" id="btnCancelAddUser">Cancel</button>
+          <button type="submit" class="btn btn-primary">Create Customer</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============================================== -->
+  <!-- MODAL: EDIT PACKAGE PRICE                      -->
+  <!-- ============================================== -->
+  <div class="modal-backdrop" id="modalEditPackage">
+    <div class="modal-card">
+      <div class="modal-header flex-between">
+        <h3 class="modal-title">Edit Package Pricing</h3>
+        <button class="modal-close" id="btnCloseEditPackage">&times;</button>
+      </div>
+      <form id="formEditPackage" class="modal-body">
+        <input type="hidden" id="editPkgId">
+        <div class="form-group">
+          <label>Package Name:</label>
+          <input type="text" id="editPkgName" class="text-input w-100" required>
+        </div>
+        <div class="form-group">
+          <label>Price (USD):</label>
+          <input type="number" step="0.01" id="editPkgPrice" class="text-input w-100" required>
+        </div>
+        <div class="form-group">
+          <label>Description:</label>
+          <textarea id="editPkgDesc" class="text-input w-100" rows="3"></textarea>
+        </div>
+        <div class="modal-footer flex-end flex-gap mt-16">
+          <button type="button" class="btn btn-secondary" id="btnCancelEditPackage">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="/static/app.js?v=2.2"></script>
+</body>
+</html>
