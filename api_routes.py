@@ -1408,8 +1408,8 @@ async def card_process_payment(payload: Dict[str, Any] = Body(...)):
 
     # Retrieve package info from database or default packages
     cursor.execute("SELECT * FROM packages WHERE id = ?", (package_id,))
-    pkg = cursor.fetchone()
-    if not pkg:
+    pkg_row = cursor.fetchone()
+    if not pkg_row:
         default_packages = {
             "pkg_photobook": ("Smart Ease Photobook Designer", 2.45, "monthly"),
             "pkg_bundle": ("Smart Ease Photobook Designer + Ease Select", 3.00, "monthly"),
@@ -1418,6 +1418,8 @@ async def card_process_payment(payload: Dict[str, Any] = Body(...)):
         }
         pkg_tuple = default_packages.get(package_id, ("Smart Ease Photobook Designer", 2.45, "monthly"))
         pkg = {"id": package_id, "name": pkg_tuple[0], "price": pkg_tuple[1], "billing_interval": pkg_tuple[2]}
+    else:
+        pkg = dict(pkg_row)
 
     amount = float(payload.get("amount") or pkg["price"])
     tx_ref = f"CARD-{uuid.uuid4().hex[:12].upper()}"
