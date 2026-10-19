@@ -1102,3 +1102,246 @@ async def export_users_csv():
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=smartease_users.csv"}
     )
+
+# ==========================================
+# 8. LIVEPAY (livepay.me) GATEWAY INTEGRATION
+# ==========================================
+
+import os
+import uuid
+import httpx
+from mongo_db import sync_sqlite_to_mongo
+
+LIVEPAY_API_KEY = os.environ.get("LIVEPAY_API_KEY", "")
+LIVEPAY_SECRET_KEY = os.environ.get("LIVEPAY_SECRET_KEY", "")
+LIVEPAY_MERCHANT_ID = os.environ.get("LIVEPAY_MERCHANT_ID", "")
+LIVEPAY_BASE_URL = os.environ.get("LIVEPAY_BASE_URL", "https://api.livepay.me")
+
+@router.post("/payments/livepay/initiate")
+async def livepay_initiate_payment(payload: Dict[str, Any] = Body(...)):
+    """
+    Initiate a mobile money or card payment via LivePay.me
+    Payload: {
+        "account_id": "a6c0fee1d5422ef8",
+        "package_id": "pkg_photobook",
+        "phone_number": "+256700000000",
+        "currency": "UGX" or "USD",
+        "amount": 2.45
+    }
+    """
+    account_id = payload.get("account_id")
+    package_id = payload.get("package_id")
+    phone = payload.get("phone_number", "")
+    currency = payload.get("currency", "USD")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Verify user exists or create
+    cursor.execute("SELECT * FROM users WHERE smart_ease_account_id = ?", (account_id,))
+    user = cursor.fetchone()
+    if not user:
+        conn.close()
+        raise HTTPException(status_code=404, detail="User account not found")
+
+    # Verify package
+    cursor.execute("SELECT * FROM packages WHERE id = ?", (package_id,))
+    pkg = cursor.fetchone()
+    if not pkg:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Package not found")
+
+    amount = float(payload.get("amount") or pkg["price"])
+    tx_ref = f"LP-{uuid.uuid4().hex[:12].upper()}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Pre-record pending transaction
+    with conn:
+        conn.execute("""
+            INSERT INTO transactions (
+                id, transaction_date, user_id, package_id, product_or_package,
+                amount, refund_amount, fee_amount, net_amount, currency,
+                payment_status, payment_provider, transaction_reference, is_verified, notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            f"TXN-{uuid.uuid4().hex[:8].upper()}",
+            now_iso,
+            user["id"],
+            pkg["id"],
+            pkg["name"],
+            amount,
+            0.0,
+            0.0,
+            amount,
+            currency,
+            "Pending",
+            "LivePay",
+            tx_ref,
+            0,
+            f"LivePay collection initiated for {phone}",
+            now_iso
+        ))
+
+    api_key = LIVEPAY_API_KEY or LIVEPAY_SECRET_KEY
+    if not api_key:
+        # Development / Sandbox mock response if API key not yet provided
+        conn.close()
+        return {
+            "status": "pending",
+            "transaction_reference": tx_ref,
+            "message": "Payment initiated (LivePay API key not configured yet, simulated pending)",
+            "checkout_url": f"https://livepay.me/pay/{tx_ref}"
+        }
+
+    # Dispatch to LivePay API
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            body = {
+                "merchant_id": LIVEPAY_MERCHANT_ID,
+                "amount": amount,
+                "currency": currency,
+                "phone": phone,
+                "reference": tx_ref,
+                "callback_url": payload.get("callback_url", "")
+            }
+            resp = await client.post(f"{LIVEPAY_BASE_URL}/v1/collections", json=body, headers=headers)
+            livepay_data = resp.json() if resp.status_code < 400 else {}
+    except Exception as e:
+        livepay_data = {"error": str(e)}
+
+    conn.close()
+    return {
+        "status": "initiated",
+        "transaction_reference": tx_ref,
+        "amount": amount,
+        "currency": currency,
+        "livepay_response": livepay_data
+    }
+
+@router.post("/payments/livepay/webhook")
+async def livepay_webhook(payload: Dict[str, Any] = Body(...)):
+    """
+    Asynchronous Webhook from LivePay when a customer completes payment.
+    Activates subscription and logs verified transaction.
+    """
+    tx_ref = payload.get("reference") or payload.get("tx_ref") or payload.get("transaction_id")
+    event_status = (payload.get("status") or "").lower()
+    amount = float(payload.get("amount") or 0.0)
+
+    if not tx_ref:
+        return {"status": "ignored", "reason": "No reference in webhook"}
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Find pending transaction
+    cursor.execute("SELECT * FROM transactions WHERE transaction_reference = ?", (tx_ref,))
+    txn = cursor.fetchone()
+
+    is_success = event_status in ("success", "successful", "completed", "paid")
+    new_status = "Verified" if is_success else "Failed"
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+
+    if txn:
+        user_id = txn["user_id"]
+        pkg_id = txn["package_id"]
+        with conn:
+            conn.execute("""
+                UPDATE transactions
+                SET payment_status = ?, is_verified = ?, notes = ?
+                WHERE transaction_reference = ?
+            """, (
+                new_status,
+                1 if is_success else 0,
+                f"LivePay webhook received: {event_status}",
+                tx_ref
+            ))
+    else:
+        # Fallback if transaction was not pre-recorded
+        account_id = payload.get("customer_id") or payload.get("account_id")
+        cursor.execute("SELECT * FROM users WHERE smart_ease_account_id = ?", (account_id,))
+        u = cursor.fetchone()
+        user_id = u["id"] if u else None
+        pkg_id = "pkg_photobook"
+
+    if is_success and user_id:
+        cursor.execute("SELECT * FROM packages WHERE id = ?", (pkg_id,))
+        pkg = cursor.fetchone()
+        is_lifetime = (pkg and pkg["billing_interval"] == "lifetime")
+
+        expiry_dt = None if is_lifetime else (now_dt + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+        sub_status = "Lifetime" if is_lifetime else "Active"
+
+        # Check existing subscription
+        cursor.execute("SELECT * FROM subscriptions WHERE user_id = ?", (user_id,))
+        existing_sub = cursor.fetchone()
+
+        with conn:
+            if existing_sub:
+                conn.execute("""
+                    UPDATE subscriptions
+                    SET status = ?, payment_status = 'Verified', expiry_date = ?,
+                        amount_paid = ?, last_successful_payment = ?, payment_transaction_ref = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                """, (
+                    sub_status, expiry_dt, amount or existing_sub["amount_paid"],
+                    now_iso, tx_ref, now_iso, existing_sub["id"]
+                ))
+            else:
+                conn.execute("""
+                    INSERT INTO subscriptions (
+                        id, user_id, package_id, product_or_package, start_date, expiry_date,
+                        billing_interval, status, payment_status, last_successful_payment,
+                        payment_transaction_ref, amount_paid, currency, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    f"SUB-{uuid.uuid4().hex[:8].upper()}",
+                    user_id,
+                    pkg_id or "pkg_photobook",
+                    pkg["name"] if pkg else "Smart Ease Photobook Designer",
+                    now_iso,
+                    expiry_dt,
+                    "lifetime" if is_lifetime else "monthly",
+                    sub_status,
+                    "Verified",
+                    now_iso,
+                    tx_ref,
+                    amount,
+                    payload.get("currency", "USD"),
+                    now_iso,
+                    now_iso
+                ))
+
+    # Synchronize to MongoDB cloud
+    sync_sqlite_to_mongo(conn)
+    conn.close()
+
+    return {"status": "ok", "processed": True, "event": event_status, "reference": tx_ref}
+
+@router.get("/payments/livepay/status/{reference}")
+async def livepay_check_status(reference: str):
+    """Poll transaction status for client application."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM transactions WHERE transaction_reference = ?", (reference,))
+    txn = cursor.fetchone()
+    conn.close()
+
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transaction reference not found")
+
+    return {
+        "reference": reference,
+        "payment_status": txn["payment_status"],
+        "is_verified": bool(txn["is_verified"]),
+        "amount": txn["amount"],
+        "currency": txn["currency"],
+        "transaction_date": txn["transaction_date"]
+    }
+
