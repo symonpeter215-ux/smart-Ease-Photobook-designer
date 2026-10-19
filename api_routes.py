@@ -1346,13 +1346,21 @@ async def livepay_check_status(reference: str):
     if not txn:
         raise HTTPException(status_code=404, detail="Transaction reference not found")
 
+    lic_key = None
+    if bool(txn["is_verified"]):
+        raw_pkg = txn["package_id"] or "pkg_photobook"
+        key_pfx = "SE-PHOTOBOOK" if "photobook" in raw_pkg else ("SE-BUNDLE" if "bundle" in raw_pkg else ("SE-SELECT" if "select" in raw_pkg else "SE-LIFETIME"))
+        lic_key = f"{key_pfx}-{uuid.uuid4().hex[:8].upper()}-PRO"
+
     return {
         "reference": reference,
         "payment_status": txn["payment_status"],
         "is_verified": bool(txn["is_verified"]),
         "amount": txn["amount"],
         "currency": txn["currency"],
-        "transaction_date": txn["transaction_date"]
+        "transaction_date": txn["transaction_date"],
+        "license_key": lic_key,
+        "licenseKey": lic_key
     }
 
 # ==========================================
@@ -1506,6 +1514,9 @@ async def card_process_payment(payload: Dict[str, Any] = Body(...)):
 
     conn.close()
 
+    key_prefix = "SE-PHOTOBOOK" if "photobook" in package_id else ("SE-BUNDLE" if "bundle" in package_id else ("SE-SELECT" if "select" in package_id else "SE-LIFETIME"))
+    generated_lic = f"{key_prefix}-{uuid.uuid4().hex[:8].upper()}-PRO"
+
     return {
         "success": True,
         "status": "Verified",
@@ -1515,6 +1526,8 @@ async def card_process_payment(payload: Dict[str, Any] = Body(...)):
         "packageId": pkg["id"],
         "amount": amount,
         "currency": "USD",
+        "license_key": generated_lic,
+        "licenseKey": generated_lic,
         "message": f"✓ Payment of USD {amount:.2f} verified via Card! Full access unlocked."
     }
 
