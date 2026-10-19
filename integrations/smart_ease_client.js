@@ -4,7 +4,7 @@
  */
 
 class SmartEaseSubscriptionClient {
-  constructor(baseUrl = 'http://127.0.0.1:8100', productName = 'photobook') {
+  constructor(baseUrl = 'https://smart-ease-photobook-designer.onrender.com', productName = 'photobook') {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.productName = productName;
   }
