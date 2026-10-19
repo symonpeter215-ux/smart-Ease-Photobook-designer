@@ -34,9 +34,14 @@ def get_mongo_client():
         return None
     if _client is None:
         try:
-            _client = MongoClient(uri, serverSelectionTimeoutMS=6000)
+            _client = MongoClient(
+                uri,
+                serverSelectionTimeoutMS=4000,
+                connectTimeoutMS=4000,
+                socketTimeoutMS=4000
+            )
         except Exception as e:
-            print(f"[MongoDB] Connection error: {e}")
+            print(f"[MongoDB] Connection error: {e}. Please ensure 0.0.0.0/0 is whitelisted in MongoDB Atlas Network Access.")
             return None
     return _client
 

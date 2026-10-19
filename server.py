@@ -47,12 +47,14 @@ os.makedirs(STATIC_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.get("/")
+@app.head("/")
 async def root():
     return RedirectResponse(url="/static/index.html")
 
 from mongo_db import is_mongo_connected
 
 @app.get("/health")
+@app.head("/health")
 async def health_check():
     return {
         "status": "ok",
