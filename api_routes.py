@@ -1113,26 +1113,25 @@ import httpx
 from mongo_db import sync_sqlite_to_mongo
 
 LIVEPAY_API_KEY = os.environ.get("LIVEPAY_API_KEY", "")
-LIVEPAY_SECRET_KEY = os.environ.get("LIVEPAY_SECRET_KEY", "")
-LIVEPAY_MERCHANT_ID = os.environ.get("LIVEPAY_MERCHANT_ID", "")
-LIVEPAY_BASE_URL = os.environ.get("LIVEPAY_BASE_URL", "https://api.livepay.me")
+LIVEPAY_ACCOUNT_NUMBER = os.environ.get("LIVEPAY_ACCOUNT_NUMBER") or os.environ.get("LIVEPAY_MERCHANT_ID", "")
+LIVEPAY_BASE_URL = os.environ.get("LIVEPAY_BASE_URL", "https://livepay.me/api")
 
 @router.post("/payments/livepay/initiate")
 async def livepay_initiate_payment(payload: Dict[str, Any] = Body(...)):
     """
-    Initiate a mobile money or card payment via LivePay.me
+    Initiate a mobile money collection via LivePay.me API (/api/collect-money)
     Payload: {
         "account_id": "a6c0fee1d5422ef8",
         "package_id": "pkg_photobook",
-        "phone_number": "+256700000000",
-        "currency": "UGX" or "USD",
-        "amount": 2.45
+        "phone_number": "0777123456",
+        "currency": "UGX",
+        "amount": 10000
     }
     """
     account_id = payload.get("account_id")
     package_id = payload.get("package_id")
-    phone = payload.get("phone_number", "")
-    currency = payload.get("currency", "USD")
+    phone = payload.get("phone_number") or payload.get("phoneNumber", "")
+    currency = payload.get("currency", "UGX")
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1152,7 +1151,7 @@ async def livepay_initiate_payment(payload: Dict[str, Any] = Body(...)):
         raise HTTPException(status_code=404, detail="Package not found")
 
     amount = float(payload.get("amount") or pkg["price"])
-    tx_ref = f"LP-{uuid.uuid4().hex[:12].upper()}"
+    tx_ref = f"LP{uuid.uuid4().hex[:14].upper()}"
     now_iso = datetime.now(timezone.utc).isoformat()
 
     # Pre-record pending transaction
@@ -1182,34 +1181,36 @@ async def livepay_initiate_payment(payload: Dict[str, Any] = Body(...)):
             now_iso
         ))
 
-    api_key = LIVEPAY_API_KEY or LIVEPAY_SECRET_KEY
+    api_key = LIVEPAY_API_KEY
+    account_num = LIVEPAY_ACCOUNT_NUMBER or payload.get("account_number", "")
+
     if not api_key:
-        # Development / Sandbox mock response if API key not yet provided
         conn.close()
         return {
             "status": "pending",
             "transaction_reference": tx_ref,
-            "message": "Payment initiated (LivePay API key not configured yet, simulated pending)",
-            "checkout_url": f"https://livepay.me/pay/{tx_ref}"
+            "message": "Payment recorded locally (LIVEPAY_API_KEY not configured yet)",
+            "test_mode": True
         }
 
-    # Dispatch to LivePay API
+    # Dispatch to LivePay API /api/collect-money
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=20.0) as client:
             headers = {
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json"
             }
             body = {
-                "merchant_id": LIVEPAY_MERCHANT_ID,
+                "accountNumber": account_num,
+                "phoneNumber": phone,
                 "amount": amount,
                 "currency": currency,
-                "phone": phone,
                 "reference": tx_ref,
-                "callback_url": payload.get("callback_url", "")
+                "description": f"Smart Ease: {pkg['name']}"
             }
-            resp = await client.post(f"{LIVEPAY_BASE_URL}/v1/collections", json=body, headers=headers)
-            livepay_data = resp.json() if resp.status_code < 400 else {}
+            url = f"{LIVEPAY_BASE_URL.rstrip('/')}/collect-money"
+            resp = await client.post(url, json=body, headers=headers)
+            livepay_data = resp.json() if resp.status_code < 400 else {"http_error": resp.status_code, "raw": resp.text}
     except Exception as e:
         livepay_data = {"error": str(e)}
 
