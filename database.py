@@ -8,6 +8,7 @@ import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any, Tuple
+from mongo_db import sync_mongo_to_sqlite, sync_sqlite_to_mongo
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "subscription_manager.db")
 
@@ -131,8 +132,12 @@ def init_db():
     seed_initial_packages(conn)
     # Check if we should seed default data
     seed_initial_data(conn)
+    # Sync from MongoDB cloud if MONGODB_URI is provided
+    sync_mongo_to_sqlite(conn)
     # Auto-recalculate subscription statuses
     recalculate_all_subscription_statuses(conn)
+    # Ensure MongoDB cloud has all latest records
+    sync_sqlite_to_mongo(conn)
     conn.close()
 
 def seed_initial_packages(conn: sqlite3.Connection):
@@ -629,6 +634,8 @@ def recalculate_all_subscription_statuses(conn: Optional[sqlite3.Connection] = N
             SET status = ?, updated_at = ?
             WHERE id = ?
         """, updates)
+
+    sync_sqlite_to_mongo(conn)
 
     if should_close:
         conn.close()

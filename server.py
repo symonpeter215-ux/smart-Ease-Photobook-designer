@@ -50,19 +50,27 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 async def root():
     return RedirectResponse(url="/static/index.html")
 
+from mongo_db import is_mongo_connected
+
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "app": "Smart Ease Subscription Manager", "version": "1.0.0"}
+    return {
+        "status": "ok",
+        "app": "Smart Ease Subscription Manager",
+        "version": "1.0.0",
+        "mongodb": is_mongo_connected()
+    }
 
 def start():
-    port = 8100
+    port = int(os.environ.get("PORT", 8100))
     if len(sys.argv) > 1 and sys.argv[1].isdigit():
         port = int(sys.argv[1])
+    host = os.environ.get("HOST", "0.0.0.0")
     print(f"============================================================")
     print(f"  Smart Ease Subscription & Revenue Manager Server Active    ")
-    print(f"  URL: http://127.0.0.1:{port}/                             ")
+    print(f"  URL: http://{host}:{port}/                                ")
     print(f"============================================================")
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 if __name__ == "__main__":
     start()
