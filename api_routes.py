@@ -1112,7 +1112,12 @@ import uuid
 import httpx
 from mongo_db import sync_sqlite_to_mongo
 
-LIVEPAY_API_KEY = os.environ.get("LIVEPAY_API_KEY", "")
+LIVEPAY_API_KEY = (
+    os.environ.get("LIVEPAY_API_KEY")
+    or os.environ.get("LIVEPAY_WEB_KEY")
+    or os.environ.get("LIVEPAY_SECRET_KEY")
+    or ""
+)
 LIVEPAY_ACCOUNT_NUMBER = os.environ.get("LIVEPAY_ACCOUNT_NUMBER") or os.environ.get("LIVEPAY_MERCHANT_ID", "")
 LIVEPAY_BASE_URL = os.environ.get("LIVEPAY_BASE_URL", "https://livepay.me/api")
 
