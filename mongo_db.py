@@ -47,7 +47,7 @@ def get_mongo_client():
 
 def get_mongo_db():
     client = get_mongo_client()
-    if not client:
+    if client is None:
         return None
     db_name = os.environ.get("MONGODB_DB_NAME", "smart_ease_subscriptions")
     return client[db_name]
@@ -59,7 +59,7 @@ def is_mongo_connected() -> Dict[str, Any]:
     if MongoClient is None:
         return {"configured": True, "connected": False, "status": "pymongo not installed"}
     client = get_mongo_client()
-    if not client:
+    if client is None:
         return {"configured": True, "connected": False, "status": "Failed to initialize client"}
     try:
         client.admin.command("ping")
@@ -68,7 +68,7 @@ def is_mongo_connected() -> Dict[str, Any]:
             "configured": True,
             "connected": True,
             "status": "Connected to MongoDB",
-            "database": db.name if db else "unknown"
+            "database": db.name if db is not None else "unknown"
         }
     except Exception as e:
         return {"configured": True, "connected": False, "status": f"Connection failed: {e}"}
