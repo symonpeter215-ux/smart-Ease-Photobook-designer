@@ -46,10 +46,15 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+# Mount public payment website portal
+PUBLIC_DIR = os.path.join(BASE_DIR, "public")
+if os.path.exists(PUBLIC_DIR):
+    app.mount("/pay", StaticFiles(directory=PUBLIC_DIR, html=True), name="public_pay")
+
 @app.get("/")
 @app.head("/")
 async def root():
-    return RedirectResponse(url="/static/index.html")
+    return RedirectResponse(url="/pay/index.html" if os.path.exists(os.path.join(PUBLIC_DIR, "index.html")) else "/static/index.html")
 
 from mongo_db import is_mongo_connected
 
