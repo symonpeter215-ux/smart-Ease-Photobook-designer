@@ -135,6 +135,17 @@ def run_tests():
     assert sync_res["status"] == "success"
     print(f"[PASS] 8b. Local application scanner & identity sync verified: {sync_res['details']}")
 
+    # 8c. Live Photobook Server Handshake & License Push (Port 8765)
+    resp_pb_ping = client.get("/api/v1/apps/photobook/ping")
+    assert resp_pb_ping.status_code == 200
+    pb_ping = resp_pb_ping.json()
+    print(f"[PASS] 8c. Photobook real server ping verified: online={pb_ping.get('online')}, latency={pb_ping.get('latency_ms')}ms")
+
+    resp_pb_push = client.post("/api/v1/apps/photobook/push-license", json={"licenseKey": "SE-LIFETIME-PRO"})
+    assert resp_pb_push.status_code == 200
+    msg = resp_pb_push.json().get('message', '').encode('ascii', 'ignore').decode('ascii')
+    print(f"[PASS] 8d. Photobook live license push verified: {msg}")
+
     # 9. Client License Verification API (for Photobook & Ease Select integration)
     resp_ver = client.post("/api/v1/client/verify-license", json={
         "account_id": "a6c0fee1d5422ef8",
@@ -191,6 +202,71 @@ def run_tests():
     ind_subs = r_sub_ind.json()
     assert all(s["is_independent"] is True for s in ind_subs)
     print(f"[PASS] 10f. Subscriptions table access_type_filter verified: {len(ind_subs)} independent subscriptions")
+
+    # 11. Live Presence & Connection Mode (Who is Online vs Uses Offline Mode)
+    resp_pres = client.get("/api/v1/presence/metrics")
+    assert resp_pres.status_code == 200
+    p_data = resp_pres.json()
+    assert "online_now" in p_data
+    assert "uses_offline_mode" in p_data
+    assert "offline_count" in p_data
+    assert p_data["online_now"] >= 1
+    assert p_data["uses_offline_mode"] >= 1
+    print(f"[PASS] 11a. Presence metrics endpoint verified: Online={p_data['online_now']}, OfflineMode={p_data['uses_offline_mode']}, Disconnected={p_data['offline_count']}")
+
+    # Filter: Online users
+    r_online = client.get("/api/v1/users?connection_filter=online")
+    assert r_online.status_code == 200
+    online_users = r_online.json()
+    assert all(u["is_online"] is True for u in online_users)
+    print(f"[PASS] 11b. Users filter by Online Now verified: {len(online_users)} users currently active")
+
+    # Filter: Uses Offline Mode
+    r_offmode = client.get("/api/v1/users?connection_filter=offline_mode")
+    assert r_offmode.status_code == 200
+    offmode_users = r_offmode.json()
+    assert all(u["connection_mode"] == "offline_mode" for u in offmode_users)
+    print(f"[PASS] 11c. Users filter by Uses Offline Mode verified: {len(offmode_users)} users with field vouchers")
+
+    # Test Client Heartbeat API
+    hb_resp = client.post("/api/v1/client/heartbeat", json={
+        "account_id": "a6c0fee1d5422ef8",
+        "product": "photobook",
+        "mode": "online",
+        "app_version": "v2.1.0"
+    })
+    assert hb_resp.status_code == 200
+    hb_data = hb_resp.json()
+    assert hb_data["status"] == "success"
+    assert hb_data["presence"] == "online"
+    print(f"[PASS] 11d. Client Heartbeat API verified for account 'a6c0fee1d5422ef8'")
+
+    # Test Admin Mode Switch Toggle
+    toggle_resp = client.post(f"/api/v1/users/{online_users[0]['id']}/toggle-mode", json={
+        "mode": "offline_mode",
+        "lease_days": 30
+    })
+    assert toggle_resp.status_code == 200
+    tog_data = toggle_resp.json()
+    assert tog_data["connection_mode"] == "offline_mode"
+    assert "offline_lease_until" in tog_data
+    print(f"[PASS] 11e. Admin mode switch toggle verified (switched user to Offline Mode with 30-day lease)")
+
+    # Toggle back to online mode
+    toggle_back = client.post(f"/api/v1/users/{online_users[0]['id']}/toggle-mode", json={
+        "mode": "online"
+    })
+    assert toggle_back.status_code == 200
+    assert toggle_back.json()["connection_mode"] == "online"
+    print(f"[PASS] 11f. Admin mode switch toggle back to Online Sync verified")
+
+    # Verify user detail includes presence logs
+    u_detail_resp = client.get(f"/api/v1/users/{online_users[0]['id']}")
+    assert u_detail_resp.status_code == 200
+    u_det = u_detail_resp.json()
+    assert "presence_logs" in u_det
+    assert len(u_det["presence_logs"]) >= 1
+    print(f"[PASS] 11g. User detail presence logs verified: {len(u_det['presence_logs'])} logged presence events")
 
     print("\n==============================================================")
     print("  ALL VERIFICATION TESTS PASSED SUCCESSFULLY!                 ")

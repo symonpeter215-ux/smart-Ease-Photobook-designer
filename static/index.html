@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Smart Ease Subscription & Revenue Manager</title>
-  <link rel="stylesheet" href="/static/styles.css?v=2.2">
+  <link rel="stylesheet" href="/static/styles.css?v=2.3">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -55,6 +55,10 @@
       </div>
 
       <div class="header-right">
+        <a href="http://127.0.0.1:8765/index.html" target="_blank" class="btn btn-secondary btn-sm" id="btnHeaderOpenPb" title="Open running Photobook Studio on port 8765 in browser" style="display:inline-flex; align-items:center; gap:6px; text-decoration:none;">
+          <span class="pulse-dot"></span>
+          <span>Photobook Studio (8765) &nearr;</span>
+        </a>
         <button class="btn btn-secondary btn-sm" id="btnSyncApps" title="Scan & Sync local Photobook & Ease Select identities">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
           Sync Apps
@@ -168,6 +172,65 @@
               <span class="kpi-label">Lifetime Pro Users</span>
               <div class="kpi-value text-gold" id="kpiLifetimePro">-</div>
               <span class="kpi-hint">Permanent $200 licences</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live User Presence & Connectivity Banner (Who is Online vs Uses Offline) -->
+        <div class="card app-breakdown-card mb-24" style="margin-bottom: 24px; border-left: 4px solid #10b981;">
+          <div class="card-header flex-between">
+            <div>
+              <h2 class="card-title" style="display:flex; align-items:center; gap:8px;">
+                <span class="pulse-dot"></span> Live User Presence &bull; Online vs Uses Offline
+              </h2>
+              <p class="card-subtitle">Real-time presence monitoring of customers running Photobook &amp; Ease Select vs offline field mode</p>
+            </div>
+            <div class="flex-gap">
+              <button class="btn btn-secondary btn-xs" id="btnGoToUsersOnline">View Online Users &rarr;</button>
+              <button class="btn btn-secondary btn-xs" id="btnGoToUsersOfflineMode">View Offline Mode Users &rarr;</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="breakdown-chips-grid">
+              <!-- Chip 1: Online Now -->
+              <div class="chip-card chip-online" id="chipPresenceOnline" title="Click to filter users currently active online">
+                <div class="chip-top">
+                  <span class="chip-badge badge-online"><span class="pulse-dot"></span> Online Now</span>
+                  <span class="chip-count text-emerald" id="countPresenceOnline">-</span>
+                </div>
+                <div class="chip-title">Active Live Users</div>
+                <div class="chip-desc">Heartbeat ping received within last 10 minutes</div>
+              </div>
+
+              <!-- Chip 2: Uses Offline Mode -->
+              <div class="chip-card chip-offline-mode" id="chipPresenceOfflineMode" title="Click to filter users with offline license vouchers / leases">
+                <div class="chip-top">
+                  <span class="chip-badge badge-amber">🟠 Offline Mode</span>
+                  <span class="chip-count" style="color:#fbbf24;" id="countPresenceOfflineMode">-</span>
+                </div>
+                <div class="chip-title">Uses Offline Mode</div>
+                <div class="chip-desc">Licensed for field work with offline token lease</div>
+              </div>
+
+              <!-- Chip 3: Currently Offline -->
+              <div class="chip-card chip-offline" id="chipPresenceOffline" title="Click to filter disconnected/inactive users">
+                <div class="chip-top">
+                  <span class="chip-badge badge-offline">⚪ Offline</span>
+                  <span class="chip-count text-muted" id="countPresenceOffline">-</span>
+                </div>
+                <div class="chip-title">Currently Disconnected</div>
+                <div class="chip-desc">Applications closed or no recent heartbeat</div>
+              </div>
+
+              <!-- Chip 4: Active Today -->
+              <div class="chip-card chip-recent" id="chipPresenceRecent" title="Click to see users seen today">
+                <div class="chip-top">
+                  <span class="chip-badge badge-recent">🔵 Active Today</span>
+                  <span class="chip-count text-blue" id="countPresenceRecent">-</span>
+                </div>
+                <div class="chip-title">Active Within 24h</div>
+                <div class="chip-desc">Connected at least once today</div>
+              </div>
             </div>
           </div>
         </div>
@@ -364,6 +427,18 @@
               </select>
             </div>
 
+            <!-- Connectivity & Presence Filter (Online vs Uses Offline) -->
+            <div class="filter-item">
+              <label for="filterConnection">Connectivity:</label>
+              <select id="filterConnection" class="select-control highlight-select">
+                <option value="all">All Presence States</option>
+                <option value="online">🟢 Online Now (Active Session)</option>
+                <option value="offline_mode">🟠 Uses Offline Mode (Voucher / Lease)</option>
+                <option value="offline">⚪ Currently Offline / Disconnected</option>
+                <option value="online_mode">🔵 Uses Online Sync</option>
+              </select>
+            </div>
+
             <button class="btn btn-secondary btn-sm" id="btnResetUserFilters">Reset Filters</button>
           </div>
 
@@ -375,6 +450,7 @@
                   <th>Full Name</th>
                   <th>Email / Customer ID</th>
                   <th>Smart Ease Account ID</th>
+                  <th>Presence &amp; Mode</th>
                   <th>Subscription Model</th>
                   <th>Product Owned</th>
                   <th>Package Name</th>
@@ -388,7 +464,7 @@
                 </tr>
               </thead>
               <tbody id="usersTableBody">
-                <tr><td colspan="13" class="text-center text-muted">Loading users...</td></tr>
+                <tr><td colspan="14" class="text-center text-muted">Loading users...</td></tr>
               </tbody>
             </table>
           </div>
@@ -640,6 +716,47 @@
           </div>
 
           <div class="connected-apps-grid">
+            <!-- Cloud Backend: Render Production Server & MongoDB Atlas -->
+            <div class="app-connection-card" style="border: 1.5px solid rgba(99, 102, 241, 0.4); background: linear-gradient(180deg, rgba(99, 102, 241, 0.05) 0%, rgba(15, 23, 42, 0.6) 100%); grid-column: 1 / -1;">
+              <div class="app-header-strip">
+                <div class="app-icon" style="background: linear-gradient(135deg, #6366f1, #a855f7); color: #fff; font-weight: 700; font-size:1.1rem; display:flex; align-items:center; justify-content:center;">☁️</div>
+                <div>
+                  <h3 style="display:flex; align-items:center; gap:8px;">
+                    Render Production Cloud Server
+                    <span style="font-size:0.75rem; background:rgba(99, 102, 241, 0.2); color:#a5b4fc; padding:2px 8px; border-radius:12px; border:1px solid rgba(99,102,241,0.3);">Primary Cloud Backend</span>
+                  </h3>
+                  <span class="app-port-badge" style="color:#a5b4fc;">https://smart-ease-photobook-designer.onrender.com &bull; MongoDB Atlas</span>
+                </div>
+                <span class="status-indicator online" id="statusRenderIndicator">Checking Cloud...</span>
+              </div>
+              <div class="app-card-body" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:12px;">
+                <div class="info-line"><strong>Live Server URL:</strong> <code style="word-break:break-all;">https://smart-ease-photobook-designer.onrender.com</code></div>
+                <div class="info-line"><strong>Database Engine:</strong> <span class="badge badge-active" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid #10b981;">MongoDB Atlas (smart_ease_subscriptions)</span></div>
+                <div class="info-line"><strong>Cloud Status:</strong> <span id="txtRenderStatus">Online</span> <span id="badgeRenderLatency" style="display:none; font-size:0.7rem; padding:2px 6px; border-radius:4px; margin-left:6px;" class="badge badge-online"></span></div>
+                <div class="info-line"><strong>Database State:</strong> <span id="txtRenderMongo">Connected to MongoDB Atlas</span></div>
+                <div class="info-line"><strong>Client SDK URL:</strong> <code>CLOUD_MANAGER_URL (Primary Target for Photobook &amp; Ease Select)</code></div>
+                <div class="info-line"><strong>Live Cloud Data:</strong> <span id="txtRenderDataSummary">9 Verified Users &bull; 7 Active Subscriptions &bull; 16 Transactions</span></div>
+              </div>
+              <div class="app-card-footer flex-between flex-wrap gap-8" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-top:12px;">
+                <div class="flex-gap" style="display:flex; gap:8px; flex-wrap:wrap;">
+                  <button class="btn btn-secondary btn-sm" id="btnPingRender" title="Ping live Render Cloud server to measure latency">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 14 14"/></svg>
+                    Ping Render Server
+                  </button>
+                  <button class="btn btn-primary btn-sm" id="btnSyncRender" title="Pull latest users, subscriptions, and transactions from Render Cloud MongoDB">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+                    Sync Cloud Data to Local
+                  </button>
+                </div>
+                <div class="flex-gap" style="display:flex; gap:8px;">
+                  <a href="https://smart-ease-photobook-designer.onrender.com" target="_blank" class="btn btn-secondary btn-sm" id="btnOpenRender" title="Open live Render Cloud application">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                    Open Render Cloud &nearr;
+                  </a>
+                </div>
+              </div>
+            </div>
+
             <!-- App 1: Smart Ease Photobook Designer -->
             <div class="app-connection-card">
               <div class="app-header-strip">
@@ -653,11 +770,27 @@
               <div class="app-card-body">
                 <div class="info-line"><strong>Install Directory:</strong> <code>D:\Antigravity\photobook\version zero</code></div>
                 <div class="info-line"><strong>Identity Store:</strong> <code>%APPDATA%\SmartEasePhotobookStudio</code></div>
-                <div class="info-line"><strong>Server Status:</strong> <span id="txtPbServerStatus">Standby</span></div>
+                <div class="info-line"><strong>Real Server Status:</strong> <span id="txtPbServerStatus">Standby</span> <span id="badgePbLatency" style="display:none; font-size:0.7rem; padding:2px 6px; border-radius:4px; margin-left:6px;" class="badge badge-online"></span></div>
+                <div class="info-line"><strong>Live License Entitlement:</strong> <span id="txtPbLiveEntitlement">Checking...</span></div>
                 <div class="info-line"><strong>Detected Active Profile:</strong> <span id="txtPbUserProfile">Scanning...</span></div>
               </div>
-              <div class="app-card-footer">
-                <button class="btn btn-secondary btn-sm" id="btnTestPbConnection">Test Connection</button>
+              <div class="app-card-footer flex-between flex-wrap gap-8" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                <div class="flex-gap" style="display:flex; gap:8px; flex-wrap:wrap;">
+                  <button class="btn btn-secondary btn-sm" id="btnTestPbConnection" title="Ping real server on port 8765">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 14 14"/></svg>
+                    Ping Real Server
+                  </button>
+                  <button class="btn btn-primary btn-sm" id="btnPushPbLicense" title="Push active license & unlock all buttons in Photobook">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"></path></svg>
+                    Push &amp; Unlock License
+                  </button>
+                </div>
+                <div class="flex-gap" style="display:flex; gap:8px;">
+                  <button class="btn btn-secondary btn-sm" id="btnOpenPbApp" title="Open running Photobook Studio interface in browser">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                    Open Photobook (8765) &nearr;
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -861,6 +994,6 @@
   <!-- Toast Notification Container -->
   <div id="toastContainer" class="toast-container"></div>
 
-  <script src="/static/app.js?v=2.2"></script>
+  <script src="/static/app.js?v=2.3"></script>
 </body>
 </html>

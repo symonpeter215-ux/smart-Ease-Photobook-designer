@@ -138,6 +138,28 @@ function initDashboard() {
   setupChip('chipFilterEs', 'independent_ease_select');
   setupChip('chipFilterDual', 'both_independent');
   setupChip('btnGoToUsersBoth', 'both');
+
+  // Live Presence Quick Filters (Online vs Uses Offline)
+  const setupPresenceChip = (id, filterVal) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('click', () => {
+        switchTab('users');
+        const sel = document.getElementById('filterConnection');
+        if (sel) {
+          sel.value = filterVal;
+          loadUsersData();
+        }
+      });
+    }
+  };
+
+  setupPresenceChip('chipPresenceOnline', 'online');
+  setupPresenceChip('chipPresenceOfflineMode', 'offline_mode');
+  setupPresenceChip('chipPresenceOffline', 'offline');
+  setupPresenceChip('chipPresenceRecent', 'all');
+  setupPresenceChip('btnGoToUsersOnline', 'online');
+  setupPresenceChip('btnGoToUsersOfflineMode', 'offline_mode');
 }
 
 async function loadDashboardData() {
@@ -160,6 +182,19 @@ async function loadDashboardData() {
 
     document.getElementById('kpiLifetimeRev').textContent = fmtUSD(data.lifetime_revenue);
     document.getElementById('kpiLifetimePro').textContent = data.lifetime_pro_users;
+
+    // Live Presence & Connectivity Counts (Who is Online vs Uses Offline)
+    if (data.presence) {
+      const elOnline = document.getElementById('countPresenceOnline');
+      const elOfflineMode = document.getElementById('countPresenceOfflineMode');
+      const elOffline = document.getElementById('countPresenceOffline');
+      const elRecent = document.getElementById('countPresenceRecent');
+
+      if (elOnline) elOnline.textContent = data.presence.online_now;
+      if (elOfflineMode) elOfflineMode.textContent = data.presence.uses_offline_mode;
+      if (elOffline) elOffline.textContent = data.presence.offline_count;
+      if (elRecent) elRecent.textContent = data.presence.recent_active_today;
+    }
 
     // App Subscription Breakdown (Both Apps vs Independent)
     if (data.app_breakdown) {
@@ -283,6 +318,7 @@ function initUsers() {
   const filterProd = document.getElementById('filterProduct');
   const filterModel = document.getElementById('filterSubModel');
   const filterStat = document.getElementById('filterStatus');
+  const filterConn = document.getElementById('filterConnection');
   const btnReset = document.getElementById('btnResetUserFilters');
   const btnExport = document.getElementById('btnExportUsersCsv');
 
@@ -290,6 +326,7 @@ function initUsers() {
   if (filterProd) filterProd.addEventListener('change', loadUsersData);
   if (filterModel) filterModel.addEventListener('change', loadUsersData);
   if (filterStat) filterStat.addEventListener('change', loadUsersData);
+  if (filterConn) filterConn.addEventListener('change', loadUsersData);
 
   if (btnReset) {
     btnReset.addEventListener('click', () => {
@@ -297,6 +334,7 @@ function initUsers() {
       if (filterProd) filterProd.value = 'all';
       if (filterModel) filterModel.value = 'all';
       if (filterStat) filterStat.value = 'all';
+      if (filterConn) filterConn.value = 'all';
       loadUsersData();
     });
   }
@@ -313,8 +351,9 @@ async function loadUsersData() {
   const product = document.getElementById('filterProduct')?.value || 'all';
   const status = document.getElementById('filterStatus')?.value || 'all';
   const app_subscription_filter = document.getElementById('filterSubModel')?.value || 'all';
+  const connection_filter = document.getElementById('filterConnection')?.value || 'all';
 
-  const params = new URLSearchParams({ search, product, status, app_subscription_filter });
+  const params = new URLSearchParams({ search, product, status, app_subscription_filter, connection_filter });
   try {
     const res = await fetch(`/api/v1/users?${params}`);
     if (!res.ok) throw new Error('Failed to load users');
@@ -333,7 +372,7 @@ function renderUsersTable(users) {
   if (summary) summary.textContent = `Showing ${users.length} registered customer${users.length === 1 ? '' : 's'}`;
 
   if (!users || users.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="13" class="text-center text-muted">No matching users found</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="14" class="text-center text-muted">No matching users found</td></tr>';
     return;
   }
 
@@ -343,11 +382,33 @@ function renderUsersTable(users) {
     const multiSubHint = (u.active_subscriptions_count > 1 || u.app_access_code === 'both_independent') ? 
       `<br><span style="font-size:0.7rem; color:#a855f7; font-weight:600;">⚡ 2 Independent Subs</span>` : '';
 
+    let presenceHtml = '';
+    if (u.is_online) {
+      presenceHtml = `
+        <span class="badge badge-online"><span class="pulse-dot"></span> Online</span>
+        <div style="font-size:0.72rem; color:#10b981; margin-top:2px; font-weight:500;">${escapeHtml(u.last_app || 'App')} &bull; ${escapeHtml(u.last_seen_relative)}</div>
+        ${u.connection_mode === 'offline_mode' ? '<span class="badge badge-amber" style="font-size:0.65rem; padding:1px 5px; margin-top:2px;">Field Lease</span>' : ''}
+      `;
+    } else if (u.connection_mode === 'offline_mode') {
+      const leaseDate = u.offline_lease_until ? u.offline_lease_until.split('T')[0] : 'Token Active';
+      presenceHtml = `
+        <span class="badge badge-amber">🟠 Uses Offline Mode</span>
+        <div style="font-size:0.72rem; color:#fbbf24; margin-top:2px; font-weight:500;">Lease: ${escapeHtml(leaseDate)}</div>
+        <div style="font-size:0.7rem; color:#94a3b8;">Last: ${escapeHtml(u.last_seen_relative)}</div>
+      `;
+    } else {
+      presenceHtml = `
+        <span class="badge badge-offline">⚪ Disconnected</span>
+        <div style="font-size:0.72rem; color:#94a3b8; margin-top:2px;">Last: ${escapeHtml(u.last_seen_relative)}</div>
+      `;
+    }
+
     return `
       <tr onclick="openUserDetail('${escapeHtml(u.id)}')">
         <td><strong>${escapeHtml(u.full_name)}</strong></td>
         <td>${escapeHtml(u.email || u.id)}</td>
         <td><code>${escapeHtml(u.smart_ease_account_id)}</code></td>
+        <td>${presenceHtml}</td>
         <td>${modelBadge}${multiSubHint}</td>
         <td>${escapeHtml(u.product_owned || '-')}</td>
         <td>${escapeHtml(u.package_name || '-')}</td>
@@ -390,7 +451,7 @@ async function openUserDetail(userId) {
 
     const content = document.getElementById('mudContent');
     content.innerHTML = `
-      <div class="user-detail-grid" style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-bottom: 20px;">
+      <div class="user-detail-grid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-bottom: 20px;">
         <div class="info-box" style="background:rgba(0,0,0,0.2); padding:14px; border-radius:8px; border:1px solid rgba(255,255,255,0.08);">
           <div style="font-size:0.75rem; color:#94a3b8; text-transform:uppercase;">Customer Profile</div>
           <div style="margin-top:6px; font-size:0.86rem;"><strong>Email:</strong> ${escapeHtml(u.email || 'None')}</div>
@@ -407,6 +468,23 @@ async function openUserDetail(userId) {
             return match ? `<span class="badge ${match.app_access_badge || 'badge-neutral'}">${escapeHtml(match.app_access_label || '-')}</span>` : `<span class="badge badge-neutral">${escapeHtml(u.package_name || '-')}</span>`;
           })()}</div>
           <div style="font-size:0.86rem; margin-top:4px;"><strong>Notes:</strong> ${escapeHtml(u.notes || '-')}</div>
+        </div>
+        <div class="info-box" style="background:rgba(0,0,0,0.2); padding:14px; border-radius:8px; border:1px solid rgba(255,255,255,0.08); border-left: 3px solid ${u.is_online ? '#10b981' : (u.connection_mode === 'offline_mode' ? '#f59e0b' : '#64748b')};">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div style="font-size:0.75rem; color:#94a3b8; text-transform:uppercase;">Live Presence &amp; Connectivity</div>
+            ${u.is_online ? '<span class="badge badge-online"><span class="pulse-dot"></span> Online Now</span>' : '<span class="badge badge-offline">⚪ Offline</span>'}
+          </div>
+          <div style="margin-top:8px; font-size:0.86rem;"><strong>Current Mode:</strong> ${u.connection_mode === 'offline_mode' ? '<span class="badge badge-amber">🟠 Uses Offline Mode</span>' : '<span class="badge badge-blue">🔵 Online Sync</span>'}</div>
+          <div style="font-size:0.86rem; margin-top:4px;"><strong>Active Client App:</strong> ${escapeHtml(u.last_app || u.source_app || 'Photobook')} <span style="color:#94a3b8; font-size:0.75rem;">(${escapeHtml(u.app_version || 'v2.1')})</span></div>
+          <div style="font-size:0.86rem; margin-top:4px;"><strong>Last Heartbeat:</strong> ${escapeHtml(u.last_seen || 'Never')} <span style="color:#94a3b8; font-size:0.75rem;">(${escapeHtml(u.last_seen_relative)})</span></div>
+          <div style="font-size:0.86rem; margin-top:4px;"><strong>IP &amp; Device:</strong> <code>${escapeHtml(u.last_ip || '127.0.0.1')}</code> / <code>${escapeHtml(u.device_hostname || '-')}</code></div>
+          ${u.connection_mode === 'offline_mode' ? `<div style="font-size:0.86rem; margin-top:4px; color:#fbbf24;"><strong>Field Lease Expiry:</strong> ${escapeHtml((u.offline_lease_until || '').replace('T', ' '))}</div>` : ''}
+          <div style="margin-top:10px; padding-top:8px; border-top:1px dashed rgba(255,255,255,0.1); display:flex; gap:8px;">
+            ${u.connection_mode === 'offline_mode' ? 
+              `<button class="btn btn-secondary btn-xs" onclick="toggleUserConnectionMode('${escapeHtml(u.id)}', 'online')">Switch to Online Sync Mode</button>` : 
+              `<button class="btn btn-warning btn-xs" onclick="toggleUserConnectionMode('${escapeHtml(u.id)}', 'offline_mode')">Grant 30-Day Offline Field Mode</button>`
+            }
+          </div>
         </div>
       </div>
 
@@ -441,7 +519,7 @@ async function openUserDetail(userId) {
       </div>
 
       <h4 style="font-size:0.9rem; margin-bottom:8px; color:#fff;">Payment Transaction History</h4>
-      <div class="table-responsive">
+      <div class="table-responsive" style="margin-bottom:20px;">
         <table class="data-table">
           <thead>
             <tr>
@@ -467,6 +545,64 @@ async function openUserDetail(userId) {
           </tbody>
         </table>
       </div>
+
+      <h4 style="font-size:0.9rem; margin-bottom:8px; color:#fff; display:flex; align-items:center; gap:8px;">
+        <span class="pulse-dot"></span> Recent Presence &amp; Activity Logs
+      </h4>
+      <div class="table-responsive">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Event</th>
+              <th>Mode</th>
+              <th>Client Application</th>
+              <th>Client IP &amp; Hostname</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${(!data.presence_logs || data.presence_logs.length === 0) ? '<tr><td colspan="5" class="text-center text-muted">No presence activity recorded yet</td></tr>' : 
+              data.presence_logs.map(l => `
+                <tr>
+                  <td>${escapeHtml(l.created_at)}</td>
+                  <td><span class="badge ${l.event_type === 'mode_switch' ? 'badge-purple' : (l.event_type === 'license_check' ? 'badge-blue' : 'badge-neutral')}">${escapeHtml(l.event_type)}</span></td>
+                  <td><span class="badge ${l.connection_mode === 'offline_mode' ? 'badge-amber' : 'badge-online'}">${l.connection_mode === 'offline_mode' ? '🟠 Offline Mode' : '🟢 Online'}</span></td>
+                  <td>${escapeHtml(l.source_app || 'Photobook')}</td>
+                  <td><code>${escapeHtml(l.ip_address || '-')}</code> &bull; <code>${escapeHtml(l.device_hostname || '-')}</code></td>
+                </tr>
+              `).join('')
+            }
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    document.getElementById('modalUserDetail').classList.add('open');
+  } catch (err) {
+    showToast('Failed to load user details: ' + err.message, 'error');
+  }
+}
+
+async function toggleUserConnectionMode(userId, targetMode) {
+  try {
+    const res = await fetch(`/api/v1/users/${userId}/toggle-mode`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: targetMode, lease_days: 30 })
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.detail || 'Failed to update connection mode');
+    }
+    const result = await res.json();
+    showToast(`User switched to ${targetMode === 'offline_mode' ? 'Offline Mode (30-day lease granted)' : 'Online Sync Mode'}`);
+    await loadUsersData();
+    await loadDashboardData();
+    await openUserDetail(userId);
+  } catch (err) {
+    showToast('Failed to switch mode: ' + err.message, 'error');
+  }
+}
     `;
 
     document.getElementById('modalUserDetail').classList.add('open');
@@ -733,6 +869,59 @@ function renderAllTransactionsTable(txns) {
 // 6. CONNECTED APPS
 // ==========================================
 function initConnectedApps() {
+  const btnPingRender = document.getElementById('btnPingRender');
+  const btnSyncRender = document.getElementById('btnSyncRender');
+
+  if (btnPingRender) {
+    btnPingRender.addEventListener('click', async () => {
+      try {
+        btnPingRender.classList.add('spinning');
+        btnPingRender.disabled = true;
+        showToast('Pinging Render Cloud Server & MongoDB Atlas...', 'info');
+        const res = await fetch('/api/v1/apps/render/ping');
+        const data = await res.json();
+        if (data.online) {
+          showToast(`✓ Render Cloud Connected! Latency: ${data.latency_ms}ms • MongoDB Atlas Online`, 'success');
+        } else {
+          showToast(`Render Cloud offline / waking up: ${data.message || 'Server timeout'}`, 'warning');
+        }
+        await loadConnectedAppsData();
+      } catch (err) {
+        showToast('Render ping error: ' + err.message, 'error');
+      } finally {
+        btnPingRender.classList.remove('spinning');
+        btnPingRender.disabled = false;
+      }
+    });
+  }
+
+  if (btnSyncRender) {
+    btnSyncRender.addEventListener('click', async () => {
+      try {
+        btnSyncRender.classList.add('spinning');
+        btnSyncRender.disabled = true;
+        showToast('Pulling latest users, subscriptions & transactions from Render Cloud...', 'info');
+        const res = await fetch('/api/v1/apps/render/sync', { method: 'POST' });
+        const data = await res.json();
+        if (data.status === 'success') {
+          showToast(data.message || '✓ Synchronized data from Render Cloud!', 'success');
+          await loadConnectedAppsData();
+          await loadUsersData();
+          await loadDashboardData();
+          await loadSubscriptionsData();
+          await loadRevenueData();
+        } else {
+          showToast('Sync warning: ' + (data.message || 'Could not complete sync'), 'warning');
+        }
+      } catch (err) {
+        showToast('Render sync error: ' + err.message, 'error');
+      } finally {
+        btnSyncRender.classList.remove('spinning');
+        btnSyncRender.disabled = false;
+      }
+    });
+  }
+
   const btnTriggerSync = document.getElementById('btnTriggerAutoSync');
   const btnHeaderSync = document.getElementById('btnSyncApps');
   const btnTestPb = document.getElementById('btnTestPbConnection');
@@ -768,7 +957,66 @@ function initConnectedApps() {
   if (btnTriggerSync) btnTriggerSync.addEventListener('click', runSync);
   if (btnHeaderSync) btnHeaderSync.addEventListener('click', runSync);
 
-  if (btnTestPb) btnTestPb.addEventListener('click', loadConnectedAppsData);
+  const btnPushPbLicense = document.getElementById('btnPushPbLicense');
+  const btnOpenPb = document.getElementById('btnOpenPbApp');
+
+  if (btnTestPb) {
+    btnTestPb.addEventListener('click', async () => {
+      try {
+        btnTestPb.classList.add('spinning');
+        btnTestPb.disabled = true;
+        const res = await fetch('/api/v1/apps/photobook/ping');
+        const data = await res.json();
+        if (data.online) {
+          showToast(`✓ Photobook Real Server Connected! Latency: ${data.latency_ms}ms`, 'success');
+        } else {
+          showToast(`Photobook server offline: ${data.message || 'Port 8765 not responding'}`, 'error');
+        }
+        await loadConnectedAppsData();
+      } catch (err) {
+        showToast('Ping error: ' + err.message, 'error');
+      } finally {
+        btnTestPb.classList.remove('spinning');
+        btnTestPb.disabled = false;
+      }
+    });
+  }
+
+  if (btnPushPbLicense) {
+    btnPushPbLicense.addEventListener('click', async () => {
+      try {
+        btnPushPbLicense.classList.add('spinning');
+        btnPushPbLicense.disabled = true;
+        showToast('Pushing active license to Photobook Studio on port 8765...', 'info');
+        const res = await fetch('/api/v1/apps/photobook/push-license', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ licenseKey: 'SE-LIFETIME-PRO', email: 'studio@rafiapictures.com' })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(data.message || '✓ License activated in Photobook! All buttons & features unlocked.', 'success');
+        } else {
+          showToast(data.message || data.error || 'Failed to push license', 'error');
+        }
+        await loadConnectedAppsData();
+        await loadDashboardData();
+        await loadUsersData();
+      } catch (err) {
+        showToast('Push error: ' + err.message, 'error');
+      } finally {
+        btnPushPbLicense.classList.remove('spinning');
+        btnPushPbLicense.disabled = false;
+      }
+    });
+  }
+
+  if (btnOpenPb) {
+    btnOpenPb.addEventListener('click', () => {
+      window.open('http://127.0.0.1:8765/index.html', '_blank');
+    });
+  }
+
   if (btnTestEs) btnTestEs.addEventListener('click', loadConnectedAppsData);
 
   if (btnLicenseTest) {
@@ -816,20 +1064,66 @@ async function loadConnectedAppsData() {
     if (!res.ok) throw new Error('Failed to fetch apps status');
     const data = await res.json();
 
+    // Render Cloud Server
+    const rc = data.render_cloud;
+    const indRc = document.getElementById('statusRenderIndicator');
+    const txtRcStatus = document.getElementById('txtRenderStatus');
+    const badgeRcLatency = document.getElementById('badgeRenderLatency');
+    const txtRcMongo = document.getElementById('txtRenderMongo');
+
+    if (rc && rc.is_online) {
+      if (indRc) {
+        indRc.className = 'status-indicator online';
+        indRc.textContent = 'Live Cloud Active';
+      }
+      if (txtRcStatus) {
+        txtRcStatus.innerHTML = '<span class="text-emerald">Online &bull; Live Handshake Verified</span>';
+      }
+      if (rc.telemetry && rc.telemetry.latency_ms !== undefined && badgeRcLatency) {
+        badgeRcLatency.style.display = 'inline-block';
+        badgeRcLatency.textContent = `${rc.telemetry.latency_ms}ms ping`;
+      }
+      if (txtRcMongo) {
+        txtRcMongo.innerHTML = '<span class="badge badge-active" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid #10b981;">Connected to MongoDB Atlas</span>';
+      }
+    } else {
+      if (indRc) {
+        indRc.className = 'status-indicator offline';
+        indRc.textContent = 'Standby / Connecting...';
+      }
+      if (txtRcStatus) {
+        txtRcStatus.innerHTML = '<span class="text-muted">Standby (Waking up)</span>';
+      }
+      if (badgeRcLatency) badgeRcLatency.style.display = 'none';
+    }
+
     // Photobook Designer
     const pb = data.photobook;
     const indPb = document.getElementById('statusPbIndicator');
     const txtPbStatus = document.getElementById('txtPbServerStatus');
     const txtPbUser = document.getElementById('txtPbUserProfile');
+    const badgePbLatency = document.getElementById('badgePbLatency');
+    const txtPbEntitlement = document.getElementById('txtPbLiveEntitlement');
 
     if (pb.is_running) {
       indPb.className = 'status-indicator online';
       indPb.textContent = 'Active (Port 8765)';
-      txtPbStatus.innerHTML = '<span class="text-emerald">Online &bull; Listening</span>';
+      txtPbStatus.innerHTML = '<span class="text-emerald">Online &bull; Live Handshake Active</span>';
+      if (pb.telemetry && pb.telemetry.latency_ms !== undefined) {
+        if (badgePbLatency) {
+          badgePbLatency.style.display = 'inline-block';
+          badgePbLatency.textContent = `${pb.telemetry.latency_ms}ms ping`;
+        }
+        if (txtPbEntitlement) {
+          txtPbEntitlement.innerHTML = `<span class="badge badge-active">${escapeHtml(pb.telemetry.package || 'Studio Pro')} (${escapeHtml(pb.telemetry.license_status || 'active')})</span>`;
+        }
+      }
     } else {
       indPb.className = 'status-indicator offline';
       indPb.textContent = 'Offline';
       txtPbStatus.innerHTML = '<span class="text-muted">Standby (Not currently running)</span>';
+      if (badgePbLatency) badgePbLatency.style.display = 'none';
+      if (txtPbEntitlement) txtPbEntitlement.innerHTML = '<span class="text-muted">Server Offline</span>';
     }
 
     if (pb.detected_profile) {

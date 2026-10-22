@@ -41,22 +41,52 @@ app.add_middleware(
 # Mount API
 app.include_router(api_router)
 
-# Mount static frontend
+# Mount static frontend (Subscription & Revenue Manager Admin Console)
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# Mount public payment website portal
-PUBLIC_DIR = os.path.join(BASE_DIR, "public")
-if os.path.exists(PUBLIC_DIR):
-    app.mount("/pay", StaticFiles(directory=PUBLIC_DIR, html=True), name="public_pay")
-
 @app.get("/")
 @app.head("/")
 async def root():
-    return RedirectResponse(url="/pay/index.html" if os.path.exists(os.path.join(PUBLIC_DIR, "index.html")) else "/static/index.html")
+    """Root URL opens the Smart Ease Subscription Manager Admin Console."""
+    return RedirectResponse(url="/static/index.html")
+
+@app.get("/admin")
+@app.get("/admin/")
+@app.get("/manager")
+@app.get("/dashboard")
+async def admin_console_redirect():
+    """Direct alias for the Smart Ease Subscription Manager Admin Console."""
+    return RedirectResponse(url="/static/index.html")
 
 from mongo_db import is_mongo_connected
+import threading
+import time
+
+def start_background_cloud_sync():
+    """If running locally, periodically syncs local database with the live Render Cloud server."""
+    if os.environ.get("RENDER"):
+        return
+
+    def _sync_worker():
+        time.sleep(2)
+        while True:
+            try:
+                from database import get_db_connection, recalculate_all_subscription_statuses
+                from app_identity import sync_render_cloud_data
+                conn = get_db_connection()
+                sync_render_cloud_data(conn)
+                recalculate_all_subscription_statuses(conn)
+                conn.close()
+            except Exception:
+                pass
+            time.sleep(45)
+
+    t = threading.Thread(target=_sync_worker, daemon=True)
+    t.start()
+
+start_background_cloud_sync()
 
 @app.get("/health")
 @app.head("/health")

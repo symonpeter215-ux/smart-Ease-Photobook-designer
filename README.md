@@ -1,6 +1,9 @@
-# Smart Ease Subscription & Payment Server
+# Ease Subscription Manager
 
-A high-performance, centralized subscription, licensing, and revenue management backend for the **Smart Ease** desktop application ecosystem (**Smart Ease Photobook Designer** & **Ease Select**).
+A dedicated, administrative subscription management and monitoring application for the owner of **Smart Ease Photobook Designer** & **Ease Select**.
+
+> [!NOTE]
+> This application is strictly the **Subscription Management Console** for the product owner/administrator (monitoring registered users, active subscriptions, online/offline presence, license leases, packages, and recorded revenue). It is **NOT** the customer-facing payment website (which is maintained separately in `ease creative suite payments`).
 
 ---
 
