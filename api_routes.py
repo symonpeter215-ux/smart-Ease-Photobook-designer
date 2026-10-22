@@ -2013,6 +2013,9 @@ async def login_auth_user(payload: Dict[str, Any] = Body(...)):
         }
     }
 
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+
 @router.post("/auth/google")
 async def google_auth_user(payload: Dict[str, Any] = Body(...)):
     email = (payload.get("email") or "").strip().lower()
