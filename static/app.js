@@ -3,6 +3,18 @@
  * Desktop Frontend Controller
  */
 
+// Direct Online Cloud Connection (NO local server needed)
+const PROD_API_BASE = 'https://smart-ease-photobook-designer.onrender.com';
+const API_BASE = window.location.hostname.includes('onrender.com') ? '' : PROD_API_BASE;
+
+const _nativeFetch = window.fetch;
+window.fetch = function(url, options) {
+  if (typeof url === 'string' && url.startsWith('/api/')) {
+    url = API_BASE + url;
+  }
+  return _nativeFetch(url, options);
+};
+
 // Application State
 const state = {
   currentTab: 'dashboard',
