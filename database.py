@@ -52,6 +52,12 @@ def init_db():
                 package_name TEXT,
                 source_app TEXT DEFAULT 'Photobook',
                 device_hostname TEXT,
+                connection_mode TEXT NOT NULL DEFAULT 'online', -- 'online' or 'offline_mode'
+                last_seen TEXT,
+                last_ip TEXT DEFAULT '127.0.0.1',
+                last_app TEXT,
+                app_version TEXT DEFAULT 'v2.4',
+                offline_lease_until TEXT,
                 notes TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -121,12 +127,34 @@ def init_db():
             );
         """)
 
+        # 6. User Presence & Connectivity Logs Table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_presence_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                event_type TEXT NOT NULL, -- 'heartbeat', 'license_check', 'mode_switch', 'login'
+                connection_mode TEXT NOT NULL DEFAULT 'online', -- 'online', 'offline_mode'
+                source_app TEXT NOT NULL DEFAULT 'Photobook',
+                device_hostname TEXT,
+                ip_address TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+        """)
+
         # Create helpful indexes
         conn.execute("CREATE INDEX IF NOT EXISTS idx_subs_user_id ON subscriptions(user_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_subs_status ON subscriptions(status);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_user_id ON transactions(user_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(transaction_date);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_status ON transactions(payment_status);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pres_user_id ON user_presence_logs(user_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pres_created ON user_presence_logs(created_at);")
+
+    # Migrate columns if existing DB was created without them
+    migrate_presence_columns(conn)
+    migrate_user_auth_columns(conn)
 
     # Seed default packages if not exist
     seed_initial_packages(conn)
@@ -639,3 +667,233 @@ def recalculate_all_subscription_statuses(conn: Optional[sqlite3.Connection] = N
 
     if should_close:
         conn.close()
+
+def migrate_presence_columns(conn: sqlite3.Connection):
+    """
+    Safely migrates SQLite schema if the existing users table does not have presence columns.
+    Seeds realistic presence states for initial users if they are newly added.
+    """
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(users)")
+    cols = {row["name"] for row in cursor.fetchall()}
+    
+    with conn:
+        if "connection_mode" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN connection_mode TEXT NOT NULL DEFAULT 'online'")
+        if "last_seen" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN last_seen TEXT")
+        if "last_ip" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN last_ip TEXT DEFAULT '127.0.0.1'")
+        if "last_app" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN last_app TEXT")
+        if "app_version" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN app_version TEXT DEFAULT 'v2.4'")
+        if "offline_lease_until" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN offline_lease_until TEXT")
+
+    # If all last_seen are NULL, seed realistic states for default users
+    cursor.execute("SELECT COUNT(*) as cnt FROM users WHERE last_seen IS NOT NULL")
+    if cursor.fetchone()["cnt"] == 0:
+        now_dt = datetime.now(timezone.utc)
+        defaults = [
+            ("a6c0fee1d5422ef8", "online", (now_dt - timedelta(minutes=2)).strftime("%Y-%m-%d %H:%M:%S"), "Smart Ease Photobook Designer", None),
+            ("SE-33829", "online", (now_dt - timedelta(minutes=4)).strftime("%Y-%m-%d %H:%M:%S"), "Photobook + Ease Select", None),
+            ("SE-67129", "online", (now_dt - timedelta(minutes=7)).strftime("%Y-%m-%d %H:%M:%S"), "Ease Select", None),
+            ("SE-54210", "offline_mode", (now_dt - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S"), "Ease Select", (now_dt + timedelta(days=27)).strftime("%Y-%m-%d %H:%M:%S")),
+            ("SE-77401", "offline_mode", (now_dt - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"), "Smart Ease Photobook Designer", (now_dt + timedelta(days=14)).strftime("%Y-%m-%d %H:%M:%S")),
+            ("SE-91823", "online", (now_dt - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S"), "Smart Ease Photobook Designer", None),
+            ("SE-44012", "online", (now_dt - timedelta(hours=6)).strftime("%Y-%m-%d %H:%M:%S"), "Ease Select", None),
+            ("SE-88219", "online", (now_dt - timedelta(days=12)).strftime("%Y-%m-%d %H:%M:%S"), "Photobook", None),
+            ("SE-11204", "online", None, "Photobook", None),
+        ]
+        with conn:
+            for acc_id, mode, seen, app_name, lease in defaults:
+                conn.execute("""
+                    UPDATE users 
+                    SET connection_mode = ?, last_seen = ?, last_app = ?, offline_lease_until = ?
+                    WHERE smart_ease_account_id = ?
+                """, (mode, seen, app_name, lease, acc_id))
+
+def migrate_user_auth_columns(conn: sqlite3.Connection):
+    """
+    Safely migrates SQLite schema if the existing users table does not have authentication columns.
+    Ensures password_hash, password_salt, auth_provider, google_id, and avatar_url exist.
+    """
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(users)")
+    cols = {row["name"] for row in cursor.fetchall()}
+    with conn:
+        if "password_hash" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+        if "password_salt" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN password_salt TEXT")
+        if "auth_provider" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN auth_provider TEXT DEFAULT 'email'")
+        if "google_id" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN google_id TEXT")
+        if "avatar_url" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN avatar_url TEXT")
+
+def record_presence_heartbeat(
+    account_id: str,
+    product: str = "photobook",
+    mode: str = "online",
+    device_hostname: Optional[str] = None,
+    ip_address: str = "127.0.0.1",
+    app_version: str = "v2.4",
+    conn: Optional[sqlite3.Connection] = None
+) -> Dict[str, Any]:
+    """
+    Records an active heartbeat from Photobook Designer or Ease Select.
+    Updates the user's presence, last seen timestamp, active client app, and connection mode.
+    """
+    should_close = False
+    if conn is None:
+        conn = get_db_connection()
+        should_close = True
+
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, smart_ease_account_id, full_name, connection_mode FROM users WHERE smart_ease_account_id = ? OR email = ? OR id = ?", (account_id, account_id, account_id))
+    user = cursor.fetchone()
+
+    if not user:
+        if should_close:
+            conn.close()
+        return {"status": "user_not_found", "recorded": False}
+
+    prod_label = "Smart Ease Photobook Designer" if "photobook" in product.lower() else ("Ease Select" if "select" in product.lower() else product)
+    actual_mode = mode if mode in ("online", "offline_mode") else (user["connection_mode"] or "online")
+
+    with conn:
+        conn.execute("""
+            UPDATE users
+            SET last_seen = ?, last_ip = ?, last_app = ?, connection_mode = ?,
+                device_hostname = COALESCE(?, device_hostname), app_version = ?, updated_at = ?
+            WHERE id = ?
+        """, (now_iso, ip_address, prod_label, actual_mode, device_hostname, app_version, now_iso, user["id"]))
+
+        conn.execute("""
+            INSERT INTO user_presence_logs (
+                user_id, account_id, event_type, connection_mode, source_app, device_hostname, ip_address, created_at
+            ) VALUES (?, ?, 'heartbeat', ?, ?, ?, ?, ?)
+        """, (user["id"], user["smart_ease_account_id"], actual_mode, prod_label, device_hostname, ip_address, now_iso))
+
+    sync_sqlite_to_mongo(conn)
+
+    res = {
+        "status": "success",
+        "recorded": True,
+        "user_id": user["id"],
+        "account_id": user["smart_ease_account_id"],
+        "presence": "online",
+        "connection_mode": actual_mode,
+        "last_seen": now_iso
+    }
+
+    if should_close:
+        conn.close()
+    return res
+
+def set_user_connection_mode(
+    user_id: str,
+    mode: str,
+    lease_days: int = 30,
+    conn: Optional[sqlite3.Connection] = None
+) -> Dict[str, Any]:
+    """
+    Switches a customer between Online Mode and Offline Mode.
+    When switching to offline_mode, sets offline_lease_until for the specified days.
+    """
+    should_close = False
+    if conn is None:
+        conn = get_db_connection()
+        should_close = True
+
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+    lease_until = (now_dt + timedelta(days=lease_days)).strftime("%Y-%m-%d %H:%M:%S") if mode == "offline_mode" else None
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, smart_ease_account_id, full_name FROM users WHERE id = ? OR smart_ease_account_id = ?", (user_id, user_id))
+    user = cursor.fetchone()
+    if not user:
+        if should_close:
+            conn.close()
+        return {"status": "error", "message": "User not found"}
+
+    with conn:
+        conn.execute("""
+            UPDATE users
+            SET connection_mode = ?, offline_lease_until = ?, updated_at = ?
+            WHERE id = ?
+        """, (mode, lease_until, now_iso, user["id"]))
+
+        conn.execute("""
+            INSERT INTO user_presence_logs (
+                user_id, account_id, event_type, connection_mode, source_app, created_at
+            ) VALUES (?, ?, 'mode_switch', ?, 'AdminConsole', ?)
+        """, (user["id"], user["smart_ease_account_id"], mode, now_iso))
+
+    sync_sqlite_to_mongo(conn)
+
+    if should_close:
+        conn.close()
+
+    return {
+        "status": "success",
+        "user_id": user["id"],
+        "account_id": user["smart_ease_account_id"],
+        "connection_mode": mode,
+        "offline_lease_until": lease_until
+    }
+
+def get_presence_metrics(conn: Optional[sqlite3.Connection] = None) -> Dict[str, Any]:
+    """
+    Calculates dynamic presence counts:
+    - online_now (heartbeat within 10 minutes)
+    - offline_count (app closed or last_seen > 10 mins or never)
+    - uses_offline_mode (specifically configured/licensed for offline field work)
+    - uses_online_mode (configured for online sync)
+    - recent_active_today (heartbeat within 24 hours)
+    """
+    should_close = False
+    if conn is None:
+        conn = get_db_connection()
+        should_close = True
+
+    now_dt = datetime.now(timezone.utc)
+    cutoff_online = (now_dt - timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff_recent = (now_dt - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) as cnt FROM users")
+    total_users = cursor.fetchone()["cnt"]
+
+    cursor.execute("SELECT COUNT(*) as cnt FROM users WHERE last_seen IS NOT NULL AND last_seen >= ?", (cutoff_online,))
+    online_now = cursor.fetchone()["cnt"]
+
+    cursor.execute("SELECT COUNT(*) as cnt FROM users WHERE connection_mode = 'offline_mode'")
+    uses_offline_mode = cursor.fetchone()["cnt"]
+
+    cursor.execute("SELECT COUNT(*) as cnt FROM users WHERE connection_mode = 'online'")
+    uses_online_mode = cursor.fetchone()["cnt"]
+
+    cursor.execute("SELECT COUNT(*) as cnt FROM users WHERE last_seen IS NULL OR last_seen < ?", (cutoff_online,))
+    offline_count = cursor.fetchone()["cnt"]
+
+    cursor.execute("SELECT COUNT(*) as cnt FROM users WHERE last_seen IS NOT NULL AND last_seen >= ?", (cutoff_recent,))
+    recent_active_today = cursor.fetchone()["cnt"]
+
+    if should_close:
+        conn.close()
+
+    return {
+        "total_users": total_users,
+        "online_now": online_now,
+        "offline_count": offline_count,
+        "uses_offline_mode": uses_offline_mode,
+        "uses_online_mode": uses_online_mode,
+        "recent_active_today": recent_active_today
+    }
+

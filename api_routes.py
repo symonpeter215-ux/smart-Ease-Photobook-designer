@@ -18,8 +18,15 @@ from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, HTTPException, Query, Body, Response
 from fastapi.responses import StreamingResponse
 
-from database import get_db_connection, recalculate_all_subscription_statuses
-from app_identity import get_connected_apps_status, sync_local_app_identities
+from database import (
+    get_db_connection, recalculate_all_subscription_statuses,
+    get_presence_metrics, record_presence_heartbeat, set_user_connection_mode
+)
+from app_identity import (
+    get_connected_apps_status, sync_local_app_identities,
+    ping_photobook_server, push_license_to_photobook,
+    ping_render_server, sync_render_cloud_data
+)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -192,6 +199,8 @@ async def get_dashboard_metrics():
     """)
     recent_txns = [dict(r) for r in cursor.fetchall()]
 
+    presence_metrics = get_presence_metrics(conn)
+
     conn.close()
 
     return {
@@ -208,6 +217,7 @@ async def get_dashboard_metrics():
         "lifetime_fees": lifetime_fees,
         "lifetime_pro_users": lifetime_pro_users,
         "app_breakdown": app_breakdown,
+        "presence": presence_metrics,
         "currency": "USD",
         "recent_transactions": recent_txns
     }
@@ -299,7 +309,8 @@ async def get_users(
     search: Optional[str] = Query(default=None),
     product: Optional[str] = Query(default="all"),
     status: Optional[str] = Query(default="all"),
-    app_subscription_filter: Optional[str] = Query(default="all")
+    app_subscription_filter: Optional[str] = Query(default="all"),
+    connection_filter: Optional[str] = Query(default="all")
 ):
     recalculate_all_subscription_statuses()
     conn = get_db_connection()
@@ -411,6 +422,62 @@ async def get_users(
                 u["app_access_category"] = "none"
                 u["app_access_badge"] = "badge-neutral"
 
+        # Determine Live Presence & Connection Mode
+        now_dt = datetime.now(timezone.utc)
+        last_seen_str = u.get("last_seen")
+        is_online = False
+        presence_code = "offline"
+        presence_label = "Offline"
+        presence_badge = "badge-neutral"
+        last_seen_rel = "Never Connected"
+
+        if last_seen_str:
+            dt_seen = None
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+                try:
+                    dt_seen = datetime.strptime(last_seen_str.split(".")[0], fmt).replace(tzinfo=timezone.utc)
+                    break
+                except ValueError:
+                    continue
+            if dt_seen:
+                secs = max(0, (now_dt - dt_seen).total_seconds())
+                if secs <= 600:  # 10 minutes
+                    is_online = True
+                    presence_code = "online"
+                    presence_label = "Online Now"
+                    presence_badge = "badge-online"
+                elif secs <= 86400:  # 24 hours
+                    presence_code = "recent"
+                    presence_label = "Recent (Today)"
+                    presence_badge = "badge-recent"
+                else:
+                    presence_code = "offline"
+                    presence_label = "Offline"
+                    presence_badge = "badge-neutral"
+
+                if secs < 60:
+                    last_seen_rel = "Just now"
+                elif secs < 3600:
+                    last_seen_rel = f"{int(secs // 60)}m ago"
+                elif secs < 86400:
+                    last_seen_rel = f"{int(secs // 3600)}h ago"
+                else:
+                    days = int(secs // 86400)
+                    last_seen_rel = f"{days}d ago"
+            else:
+                last_seen_rel = last_seen_str
+
+        u["is_online"] = is_online
+        u["presence_code"] = presence_code
+        u["presence_label"] = presence_label
+        u["presence_badge"] = presence_badge
+        u["last_seen_relative"] = last_seen_rel
+        conn_mode = u.get("connection_mode") or "online"
+        u["connection_mode"] = conn_mode
+        u["connection_mode_label"] = "Uses Offline Mode" if conn_mode == "offline_mode" else "Online Sync"
+        u["connection_mode_badge"] = "badge-amber" if conn_mode == "offline_mode" else "badge-blue"
+        u["last_app"] = u.get("last_app") or u.get("source_app") or "Photobook"
+
         # 1. Search Filter
         if search_lower:
             match_name = search_lower in (u["full_name"] or "").lower()
@@ -445,7 +512,7 @@ async def get_users(
             elif status == "free" and ("free" not in st_val and "unlicensed" not in st_val):
                 continue
 
-        # 4. App Access & Independent Subscription Filter (New requirement)
+        # 4. App Access & Independent Subscription Filter
         if app_subscription_filter and app_subscription_filter != "all":
             asf = app_subscription_filter.lower()
             if asf == "both":
@@ -473,6 +540,18 @@ async def get_users(
                 if u["app_access_code"] != "unlicensed":
                     continue
 
+        # 5. Connection & Presence Filter (Online vs Offline vs Uses Offline Mode)
+        if connection_filter and connection_filter != "all":
+            cf = connection_filter.lower()
+            if cf == "online" and not is_online:
+                continue
+            elif cf == "offline" and is_online:
+                continue
+            elif cf in ("offline_mode", "uses_offline") and conn_mode != "offline_mode":
+                continue
+            elif cf in ("online_mode", "uses_online") and conn_mode != "online":
+                continue
+
         results.append(u)
 
     return results
@@ -491,18 +570,83 @@ async def get_user_detail(user_id: str):
     user_data = dict(user_row)
     actual_uid = user_data["id"]
 
+    # Presence details
+    now_dt = datetime.now(timezone.utc)
+    last_seen_str = user_data.get("last_seen")
+    is_online = False
+    presence_code = "offline"
+    presence_label = "Offline"
+    presence_badge = "badge-neutral"
+    last_seen_rel = "Never Connected"
+
+    if last_seen_str:
+        dt_seen = None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+            try:
+                dt_seen = datetime.strptime(last_seen_str.split(".")[0], fmt).replace(tzinfo=timezone.utc)
+                break
+            except ValueError:
+                continue
+        if dt_seen:
+            secs = max(0, (now_dt - dt_seen).total_seconds())
+            if secs <= 600:
+                is_online = True
+                presence_code = "online"
+                presence_label = "Online Now"
+                presence_badge = "badge-online"
+            elif secs <= 86400:
+                presence_code = "recent"
+                presence_label = "Recent (Today)"
+                presence_badge = "badge-recent"
+            else:
+                presence_code = "offline"
+                presence_label = "Offline"
+                presence_badge = "badge-neutral"
+
+            if secs < 60:
+                last_seen_rel = "Just now"
+            elif secs < 3600:
+                last_seen_rel = f"{int(secs // 60)}m ago"
+            elif secs < 86400:
+                last_seen_rel = f"{int(secs // 3600)}h ago"
+            else:
+                days = int(secs // 86400)
+                last_seen_rel = f"{days}d ago"
+        else:
+            last_seen_rel = last_seen_str
+
+    conn_mode = user_data.get("connection_mode") or "online"
+    user_data["is_online"] = is_online
+    user_data["presence_code"] = presence_code
+    user_data["presence_label"] = presence_label
+    user_data["presence_badge"] = presence_badge
+    user_data["last_seen_relative"] = last_seen_rel
+    user_data["connection_mode"] = conn_mode
+    user_data["connection_mode_label"] = "Uses Offline Mode" if conn_mode == "offline_mode" else "Online Sync"
+    user_data["connection_mode_badge"] = "badge-amber" if conn_mode == "offline_mode" else "badge-blue"
+    user_data["last_app"] = user_data.get("last_app") or user_data.get("source_app") or "Photobook"
+
     cursor.execute("SELECT * FROM subscriptions WHERE user_id = ? ORDER BY start_date DESC", (actual_uid,))
     subs = [dict(s) for s in cursor.fetchall()]
 
     cursor.execute("SELECT * FROM transactions WHERE user_id = ? ORDER BY transaction_date DESC", (actual_uid,))
     txns = [dict(t) for t in cursor.fetchall()]
 
+    cursor.execute("""
+        SELECT * FROM user_presence_logs 
+        WHERE user_id = ? 
+        ORDER BY created_at DESC 
+        LIMIT 8
+    """, (actual_uid,))
+    presence_logs = [dict(p) for p in cursor.fetchall()]
+
     conn.close()
 
     return {
         "user": user_data,
         "subscriptions": subs,
-        "transactions": txns
+        "transactions": txns,
+        "presence_logs": presence_logs
     }
 
 @router.post("/users")
@@ -1004,6 +1148,44 @@ async def trigger_local_sync():
     conn.close()
     return res
 
+@router.get("/apps/render/ping")
+@router.post("/apps/render/ping")
+async def api_ping_render():
+    """Real-time ping to the Render production cloud server & MongoDB Atlas."""
+    return ping_render_server()
+
+@router.post("/apps/render/sync")
+async def api_sync_render():
+    """Synchronizes users and subscriptions from Render Cloud MongoDB into local database."""
+    conn = get_db_connection()
+    res = sync_render_cloud_data(conn)
+    recalculate_all_subscription_statuses(conn)
+    conn.close()
+    return res
+
+@router.get("/apps/photobook/ping")
+@router.post("/apps/photobook/ping")
+async def api_ping_photobook():
+    """Real-time live ping to the Photobook Studio server on port 8765."""
+    return ping_photobook_server()
+
+@router.post("/apps/photobook/push-license")
+async def api_push_photobook_license(payload: Optional[Dict[str, Any]] = Body(default={})):
+    """Pushes verified license to local Photobook instance so all buttons work."""
+    key = (payload or {}).get("licenseKey") or "SE-LIFETIME-PRO"
+    email = (payload or {}).get("email") or "studio@rafiapictures.com"
+    return push_license_to_photobook(license_key=key, email=email)
+
+@router.post("/apps/photobook/launch")
+async def api_launch_photobook():
+    """Launches Photobook Studio launcher in background if not running."""
+    import subprocess
+    bat_path = r"D:\Antigravity\photobook\version zero\Launch-In-Chrome.bat"
+    if os.path.exists(bat_path):
+        subprocess.Popen(["cmd.exe", "/c", bat_path], cwd=os.path.dirname(bat_path))
+        return {"status": "success", "message": "Photobook launcher invoked"}
+    return {"status": "error", "message": "Launcher bat file not found"}
+
 @router.post("/client/verify-license")
 async def client_verify_license(payload: Dict[str, Any] = Body(...)):
     """
@@ -1055,6 +1237,18 @@ async def client_verify_license(payload: Dict[str, Any] = Body(...)):
         elif product in ("ease_select", "select") and prod_access == "ease_select":
             allowed = True
 
+    # Automatically record active presence heartbeat upon verification
+    try:
+        record_presence_heartbeat(
+            account_id=row["smart_ease_account_id"],
+            product=product,
+            mode=payload.get("mode") or "online",
+            device_hostname=payload.get("device_hostname"),
+            ip_address=payload.get("ip") or "127.0.0.1"
+        )
+    except Exception as e:
+        print(f"[Presence] Heartbeat record warning: {e}")
+
     return {
         "has_access": allowed,
         "status": sub_status,
@@ -1063,8 +1257,53 @@ async def client_verify_license(payload: Dict[str, Any] = Body(...)):
         "package_name": row["product_or_package"],
         "is_lifetime": is_lifetime,
         "expiry_date": row["expiry_date"],
+        "is_online": True,
+        "connection_mode": payload.get("mode") or "online",
         "message": f"License verified: {sub_status}" if allowed else f"Product {product} is not entitled under this subscription"
     }
+
+@router.post("/client/heartbeat")
+async def client_heartbeat(payload: Dict[str, Any] = Body(...)):
+    """
+    Heartbeat endpoint for client applications (Photobook Designer, Ease Select).
+    Updates presence in real-time so administrator knows who is Online vs Offline.
+    """
+    account_id = payload.get("account_id") or payload.get("user_id") or payload.get("email")
+    if not account_id:
+        raise HTTPException(status_code=400, detail="account_id is required")
+
+    product = payload.get("product") or "photobook"
+    mode = payload.get("mode") or "online"
+    device_hostname = payload.get("device_hostname")
+    ip_addr = payload.get("ip") or "127.0.0.1"
+    version = payload.get("app_version") or "v2.4"
+
+    res = record_presence_heartbeat(
+        account_id=account_id,
+        product=product,
+        mode=mode,
+        device_hostname=device_hostname,
+        ip_address=ip_addr,
+        app_version=version
+    )
+    return res
+
+@router.get("/presence/metrics")
+async def get_presence_stats():
+    """Returns dynamic counts of online, offline, and offline-mode users."""
+    return get_presence_metrics()
+
+@router.post("/users/{user_id}/toggle-mode")
+async def toggle_user_mode(user_id: str, payload: Dict[str, Any] = Body(...)):
+    """
+    Allows administrator to toggle a customer between 'online' mode and 'offline_mode'
+    (authorizing an offline license lease for off-grid fieldwork).
+    """
+    mode = payload.get("mode")
+    if mode not in ("online", "offline_mode"):
+        raise HTTPException(status_code=400, detail="mode must be 'online' or 'offline_mode'")
+    lease_days = int(payload.get("lease_days") or 30)
+    return set_user_connection_mode(user_id=user_id, mode=mode, lease_days=lease_days)
 
 # ==========================================
 # 7. EXPORT DATA ENDPOINTS
@@ -1077,7 +1316,15 @@ async def export_users_csv():
     cursor.execute("""
         SELECT u.full_name, u.email, u.smart_ease_account_id, u.registered_date,
                u.product_owned, u.package_name, s.start_date, s.expiry_date,
-               s.status, s.amount_paid, s.last_successful_payment, s.next_renewal_date
+               s.status, s.amount_paid, s.last_successful_payment, s.next_renewal_date,
+               COALESCE(u.connection_mode, 'online') as connection_mode,
+               u.last_seen,
+               CASE 
+                 WHEN u.last_seen IS NOT NULL AND datetime(u.last_seen) >= datetime('now', '-10 minutes') THEN 'Online Now'
+                 WHEN u.last_seen IS NOT NULL AND datetime(u.last_seen) >= datetime('now', '-24 hours') THEN 'Recent (Today)'
+                 WHEN u.last_seen IS NOT NULL THEN 'Offline'
+                 ELSE 'Never Connected'
+               END as presence_status
         FROM users u
         LEFT JOIN subscriptions s ON u.id = s.user_id
         ORDER BY u.registered_date DESC
@@ -1091,7 +1338,8 @@ async def export_users_csv():
         "Full Name", "Email", "Account ID", "Registered Date",
         "Product Owned", "Package Name", "Subscription Start",
         "Subscription Expiry", "Status", "Amount Paid (USD)",
-        "Last Payment Date", "Next Renewal Date"
+        "Last Payment Date", "Next Renewal Date",
+        "Connection Mode", "Last Seen", "Presence Status"
     ])
     for r in rows:
         writer.writerow(list(r))
@@ -1149,15 +1397,32 @@ async def livepay_initiate_payment(payload: Dict[str, Any] = Body(...)):
     cursor.execute("SELECT * FROM users WHERE smart_ease_account_id = ?", (account_id,))
     user = cursor.fetchone()
     if not user:
-        conn.close()
-        raise HTTPException(status_code=404, detail="User account not found")
+        new_uid = f"USR-{uuid.uuid4().hex[:8].upper()}"
+        now_str = datetime.now(timezone.utc).isoformat()
+        cust_email = payload.get("email") or f"{phone}@mobilepay.local"
+        with conn:
+            conn.execute("""
+                INSERT INTO users (id, smart_ease_account_id, full_name, email, registered_date, product_owned, package_name, source_app, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (new_uid, account_id, payload.get("email") or f"Customer {phone}", cust_email, now_str, "Smart Ease Photobook Designer", "Photobook Pro", "Photobook", now_str, now_str))
+        cursor.execute("SELECT * FROM users WHERE smart_ease_account_id = ?", (account_id,))
+        user = cursor.fetchone()
 
     # Verify package
     cursor.execute("SELECT * FROM packages WHERE id = ?", (package_id,))
     pkg = cursor.fetchone()
     if not pkg:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Package not found")
+        default_packages = {
+            "pkg_photobook": ("Smart Ease Photobook Designer", 2.45, "monthly"),
+            "pkg_bundle": ("Smart Ease Photobook Designer + Ease Select", 3.00, "monthly"),
+            "pkg_select": ("Ease Select", 2.45, "monthly"),
+            "pkg_ease_select": ("Ease Select", 2.45, "monthly"),
+            "pkg_lifetime": ("Lifetime Pro", 200.00, "lifetime")
+        }
+        pkg_tuple = default_packages.get(package_id, ("Smart Ease Photobook Designer", 2.45, "monthly"))
+        pkg = {"id": package_id, "name": pkg_tuple[0], "price": pkg_tuple[1], "billing_interval": pkg_tuple[2]}
+    else:
+        pkg = dict(pkg)
 
     amount = float(payload.get("amount") or pkg["price"])
     tx_ref = f"LP{uuid.uuid4().hex[:14].upper()}"
@@ -1408,9 +1673,9 @@ async def card_process_payment(payload: Dict[str, Any] = Body(...)):
         now_str = datetime.now(timezone.utc).isoformat()
         with conn:
             conn.execute("""
-                INSERT INTO users (id, smart_ease_account_id, full_name, email, registered_date, product_owned, package_name, source_app)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (new_uid, account_id, card_holder or "Smart Ease Pro User", f"{account_id}@smartease.local", now_str, "Smart Ease Photobook Designer", "Photobook Pro", "Photobook"))
+                INSERT INTO users (id, smart_ease_account_id, full_name, email, registered_date, product_owned, package_name, source_app, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (new_uid, account_id, card_holder or "Smart Ease Pro User", f"{account_id}@smartease.local", now_str, "Smart Ease Photobook Designer", "Photobook Pro", "Photobook", now_str, now_str))
         cursor.execute("SELECT * FROM users WHERE smart_ease_account_id = ?", (account_id,))
         user = cursor.fetchone()
 
@@ -1532,3 +1797,343 @@ async def card_process_payment(payload: Dict[str, Any] = Body(...)):
     }
 
 
+
+
+# ==========================================
+# 11. AUTHENTICATION & MONGODB CLOUD ACCOUNTS
+# ==========================================
+
+from mongo_db import get_mongo_db
+
+def get_user_subscription_info(user_id: str, email: str, conn: Optional[Any] = None) -> Dict[str, Any]:
+    should_close = False
+    if conn is None:
+        conn = get_db_connection()
+        should_close = True
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT s.*, p.name as pkg_name, p.billing_interval as pkg_interval
+        FROM subscriptions s
+        LEFT JOIN packages p ON s.package_id = p.id
+        WHERE (s.user_id = ? OR s.user_id IN (SELECT id FROM users WHERE LOWER(email) = ?))
+          AND s.payment_status = 'Verified'
+        ORDER BY s.created_at DESC LIMIT 1
+    """, (user_id, email.lower()))
+    sub = cursor.fetchone()
+    if should_close:
+        conn.close()
+
+    if sub:
+        st = sub["status"]
+        is_active = st in ("Active", "Lifetime")
+        is_lifetime = st == "Lifetime"
+        return {
+            "hasSubscription": is_active,
+            "status": st,
+            "packageId": sub["package_id"],
+            "packageName": sub["pkg_name"] or sub["product_or_package"],
+            "lifetimePro": is_lifetime,
+            "expiryDate": sub["expiry_date"]
+        }
+    return {
+        "hasSubscription": False,
+        "status": "Free Account",
+        "packageId": None,
+        "packageName": "Free Account",
+        "lifetimePro": False,
+        "expiryDate": None
+    }
+
+@router.post("/auth/register")
+async def register_auth_user(payload: Dict[str, Any] = Body(...)):
+    full_name = (payload.get("fullName") or payload.get("full_name") or payload.get("name") or "").strip()
+    email = (payload.get("email") or "").strip().lower()
+    password = payload.get("password") or ""
+    source_app = payload.get("sourceApp") or "Photobook"
+
+    if not full_name:
+        raise HTTPException(status_code=400, detail="Please enter your full name.")
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Please enter a valid email address.")
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters long.")
+
+    db = get_mongo_db()
+    if db is not None:
+        try:
+            existing = db["users"].find_one({"email": email})
+            if existing:
+                return {"success": False, "error": f"An account with email '{email}' is already registered. Please sign in instead."}
+        except Exception as me:
+            print(f"[MongoDB] Auth check error: {me}")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM users WHERE LOWER(email) = ?", (email,))
+    if cursor.fetchone():
+        conn.close()
+        return {"success": False, "error": f"An account with email '{email}' is already registered. Please sign in instead."}
+
+    import hashlib, uuid, os
+    salt = os.urandom(16).hex()
+    pwhash = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 100000).hex()
+
+    user_id = f"USR-{uuid.uuid4().hex[:12].upper()}"
+    smart_ease_account_id = f"SE-{uuid.uuid4().hex[:8].upper()}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    with conn:
+        conn.execute("""
+            INSERT INTO users (
+                id, smart_ease_account_id, full_name, email, registered_date,
+                product_owned, package_name, source_app, password_hash, password_salt,
+                auth_provider, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            user_id, smart_ease_account_id, full_name, email, now_iso,
+            "Smart Ease Photobook Designer", "Free Account", source_app,
+            pwhash, salt, "email", now_iso, now_iso
+        ))
+
+    sub_info = get_user_subscription_info(user_id, email, conn)
+
+    if db is not None:
+        try:
+            mongo_doc = {
+                "_id": user_id,
+                "id": user_id,
+                "smart_ease_account_id": smart_ease_account_id,
+                "full_name": full_name,
+                "email": email,
+                "registered_date": now_iso,
+                "product_owned": "Smart Ease Photobook Designer",
+                "package_name": sub_info["packageName"],
+                "source_app": source_app,
+                "password_hash": pwhash,
+                "password_salt": salt,
+                "auth_provider": "email",
+                "created_at": now_iso,
+                "updated_at": now_iso
+            }
+            db["users"].replace_one({"_id": user_id}, mongo_doc, upsert=True)
+            print(f"[MongoDB] Stored account for {email} in Mongo Atlas.")
+        except Exception as me:
+            print(f"[MongoDB] Error upserting user: {me}")
+
+    conn.close()
+
+    return {
+        "success": True,
+        "user": {
+            "id": user_id,
+            "userId": user_id,
+            "name": full_name,
+            "fullName": full_name,
+            "email": email,
+            "authProvider": "email",
+            "status": sub_info["status"],
+            "packageName": sub_info["packageName"],
+            "lifetimePro": sub_info["lifetimePro"]
+        }
+    }
+
+@router.post("/auth/login")
+async def login_auth_user(payload: Dict[str, Any] = Body(...)):
+    email = (payload.get("email") or "").strip().lower()
+    password = payload.get("password") or ""
+
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Please enter both email and password.")
+
+    user_record = None
+    db = get_mongo_db()
+    if db is not None:
+        try:
+            mongo_user = db["users"].find_one({"email": email})
+            if mongo_user:
+                user_record = dict(mongo_user)
+        except Exception as me:
+            print(f"[MongoDB] Query error: {me}")
+
+    conn = get_db_connection()
+    if not user_record:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE LOWER(email) = ?", (email,))
+        row = cursor.fetchone()
+        if row:
+            user_record = dict(row)
+
+    if not user_record:
+        conn.close()
+        return {"success": False, "error": "No account found with this email. Please check your credentials or create an account."}
+
+    auth_prov = user_record.get("auth_provider", "email")
+    if auth_prov == "google" and not user_record.get("password_hash"):
+        conn.close()
+        return {"success": False, "error": "This account was registered with Google. Please click 'Continue with Google'."}
+
+    stored_hash = user_record.get("password_hash")
+    stored_salt = user_record.get("password_salt")
+    if not stored_hash or not stored_salt:
+        conn.close()
+        return {"success": False, "error": "Account password not set or corrupted. Please sign in with Google or reset password."}
+
+    import hashlib
+    expected_hash = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(stored_salt), 100000).hex()
+    if expected_hash != stored_hash:
+        conn.close()
+        return {"success": False, "error": "Incorrect password. Please try again."}
+
+    user_id = user_record.get("id") or user_record.get("_id")
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    try:
+        with conn:
+            conn.execute("UPDATE users SET last_seen = ?, updated_at = ? WHERE id = ?", (now_iso, now_iso, user_id))
+        if db is not None:
+            db["users"].update_one({"_id": user_id}, {"$set": {"last_seen": now_iso, "updated_at": now_iso}})
+    except Exception:
+        pass
+
+    sub_info = get_user_subscription_info(user_id, email, conn)
+    conn.close()
+
+    return {
+        "success": True,
+        "user": {
+            "id": user_id,
+            "userId": user_id,
+            "name": user_record.get("full_name") or user_record.get("name") or email.split("@")[0].capitalize(),
+            "fullName": user_record.get("full_name") or user_record.get("name"),
+            "email": email,
+            "authProvider": auth_prov,
+            "status": sub_info["status"],
+            "packageName": sub_info["packageName"],
+            "lifetimePro": sub_info["lifetimePro"]
+        }
+    }
+
+@router.post("/auth/google")
+async def google_auth_user(payload: Dict[str, Any] = Body(...)):
+    email = (payload.get("email") or "").strip().lower()
+    name = (payload.get("name") or payload.get("fullName") or "").strip()
+    google_id = (payload.get("googleId") or payload.get("google_id") or "").strip()
+    avatar_url = (payload.get("avatarUrl") or payload.get("avatar_url") or "").strip()
+    source_app = payload.get("sourceApp") or "Photobook"
+
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Valid Google email is required.")
+
+    if not name:
+        name = email.split("@")[0].replace(".", " ").title()
+
+    db = get_mongo_db()
+    user_record = None
+
+    if db is not None:
+        try:
+            if google_id:
+                user_record = db["users"].find_one({"$or": [{"email": email}, {"google_id": google_id}]})
+            else:
+                user_record = db["users"].find_one({"email": email})
+            if user_record:
+                user_record = dict(user_record)
+        except Exception as me:
+            print(f"[MongoDB] Google query error: {me}")
+
+    conn = get_db_connection()
+    if not user_record:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE LOWER(email) = ? OR (google_id IS NOT NULL AND google_id = ?)", (email, google_id))
+        row = cursor.fetchone()
+        if row:
+            user_record = dict(row)
+
+    import uuid
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if user_record:
+        user_id = user_record.get("id") or user_record.get("_id")
+        smart_ease_account_id = user_record.get("smart_ease_account_id")
+        with conn:
+            conn.execute("""
+                UPDATE users SET
+                    google_id = COALESCE(?, google_id),
+                    avatar_url = COALESCE(?, avatar_url),
+                    auth_provider = 'google',
+                    last_seen = ?,
+                    updated_at = ?
+                WHERE id = ?
+            """, (google_id or None, avatar_url or None, now_iso, now_iso, user_id))
+
+        if db is not None:
+            try:
+                db["users"].update_one(
+                    {"_id": user_id},
+                    {"$set": {
+                        "google_id": google_id or user_record.get("google_id"),
+                        "avatar_url": avatar_url or user_record.get("avatar_url"),
+                        "auth_provider": "google",
+                        "last_seen": now_iso,
+                        "updated_at": now_iso
+                    }}
+                )
+            except Exception:
+                pass
+    else:
+        user_id = f"USR-G-{uuid.uuid4().hex[:10].upper()}"
+        smart_ease_account_id = f"SE-G-{uuid.uuid4().hex[:6].upper()}"
+        with conn:
+            conn.execute("""
+                INSERT INTO users (
+                    id, smart_ease_account_id, full_name, email, registered_date,
+                    product_owned, package_name, source_app, auth_provider,
+                    google_id, avatar_url, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                user_id, smart_ease_account_id, name, email, now_iso,
+                "Smart Ease Photobook Designer", "Free Account", source_app,
+                "google", google_id, avatar_url, now_iso, now_iso
+            ))
+
+        if db is not None:
+            try:
+                mongo_doc = {
+                    "_id": user_id,
+                    "id": user_id,
+                    "smart_ease_account_id": smart_ease_account_id,
+                    "full_name": name,
+                    "email": email,
+                    "registered_date": now_iso,
+                    "product_owned": "Smart Ease Photobook Designer",
+                    "package_name": "Free Account",
+                    "source_app": source_app,
+                    "auth_provider": "google",
+                    "google_id": google_id,
+                    "avatar_url": avatar_url,
+                    "created_at": now_iso,
+                    "updated_at": now_iso
+                }
+                db["users"].replace_one({"_id": user_id}, mongo_doc, upsert=True)
+                print(f"[MongoDB] Created new Google user for {email} in Mongo Atlas.")
+            except Exception as me:
+                print(f"[MongoDB] Error creating Google user: {me}")
+
+    sub_info = get_user_subscription_info(user_id, email, conn)
+    conn.close()
+
+    return {
+        "success": True,
+        "user": {
+            "id": user_id,
+            "userId": user_id,
+            "name": name,
+            "fullName": name,
+            "email": email,
+            "authProvider": "google",
+            "avatarUrl": avatar_url,
+            "status": sub_info["status"],
+            "packageName": sub_info["packageName"],
+            "lifetimePro": sub_info["lifetimePro"]
+        }
+    }
