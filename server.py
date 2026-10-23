@@ -26,7 +26,7 @@ init_db()
 app = FastAPI(
     title="Smart Ease Subscription & Revenue Manager",
     description="Administrative system for Smart Ease Photobook Designer & Ease Select",
-    version="1.0.0"
+    version="1.0.1-login-alerts"
 )
 
 # Enable CORS for local client apps
@@ -94,7 +94,7 @@ async def health_check():
     return {
         "status": "ok",
         "app": "Smart Ease Subscription Manager",
-        "version": "1.0.0",
+        "version": "1.0.1-login-alerts",
         "mongodb": is_mongo_connected()
     }
 

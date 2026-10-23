@@ -1057,6 +1057,8 @@ def get_recent_logins(limit: int = 30, conn: Optional[sqlite3.Connection] = None
         conn = get_db_connection()
         should_close = True
 
+    ensure_user_logins_table(conn)
+
     try:
         from mongo_db import get_mongo_db
         db = get_mongo_db()
@@ -1094,6 +1096,8 @@ def get_user_logins(user_id_or_email: str, limit: int = 20, conn: Optional[sqlit
     if conn is None:
         conn = get_db_connection()
         should_close = True
+
+    ensure_user_logins_table(conn)
 
     cursor = conn.cursor()
     cursor.execute("""
