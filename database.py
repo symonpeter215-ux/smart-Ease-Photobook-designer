@@ -753,6 +753,14 @@ def migrate_user_auth_columns(conn: sqlite3.Connection):
             conn.execute("ALTER TABLE users ADD COLUMN google_id TEXT")
         if "avatar_url" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN avatar_url TEXT")
+        if "email_verified" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0")
+        if "email_code_hash" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN email_code_hash TEXT")
+        if "email_code_expires" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN email_code_expires TEXT")
+        if "email_code_sent_at" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN email_code_sent_at TEXT")
 
     # Card payments buy several months at once; the paid access length is stored on the transaction.
     cursor.execute("PRAGMA table_info(transactions)")
@@ -806,7 +814,17 @@ def record_presence_heartbeat(
             ) VALUES (?, ?, 'heartbeat', ?, ?, ?, ?, ?)
         """, (user["id"], user["smart_ease_account_id"], actual_mode, prod_label, device_hostname, ip_address, now_iso))
 
-    sync_sqlite_to_mongo(conn)
+    # Heartbeats are frequent: update just this user in MongoDB instead of re-syncing every table.
+    try:
+        from mongo_db import get_mongo_db
+        mdb = get_mongo_db()
+        if mdb is not None:
+            mdb["users"].update_one({"_id": user["id"]}, {"$set": {
+                "last_seen": now_iso, "last_ip": ip_address, "last_app": prod_label,
+                "connection_mode": actual_mode, "app_version": app_version, "updated_at": now_iso,
+            }})
+    except Exception as e:
+        print(f"[MongoDB] presence update error: {e}")
 
     res = {
         "status": "success",

@@ -17,7 +17,8 @@ SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASS = os.environ.get("SMTP_PASS", "") or os.environ.get("SMTP_PASSWORD", "")
 SMTP_USE_SSL = os.environ.get("SMTP_USE_SSL", "false").lower() in ("true", "1", "yes")
-FROM_EMAIL = os.environ.get("FROM_EMAIL", "security@smartease.com")
+# Most SMTP providers (e.g. Gmail) only accept mail "from" the signed-in account.
+FROM_EMAIL = os.environ.get("FROM_EMAIL") or SMTP_USER or "security@smartease.com"
 FROM_NAME = os.environ.get("FROM_NAME", "Smart Ease Security")
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -84,6 +85,45 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
 def is_smtp_configured() -> bool:
     return bool(SMTP_HOST and SMTP_USER and SMTP_PASS)
+
+def send_email(to: str, subject: str, plain_text: str, html_body: str) -> bool:
+    """Sends one email synchronously. Returns False (and logs) if SMTP isn't set up or delivery fails."""
+    if not is_smtp_configured():
+        print(f"[Email] SMTP not configured; could not send '{subject}' to {to}")
+        return False
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"{FROM_NAME} <{FROM_EMAIL}>"
+        msg["To"] = to
+        msg.attach(MIMEText(plain_text, "plain"))
+        msg.attach(MIMEText(html_body, "html"))
+        if SMTP_USE_SSL or SMTP_PORT == 465:
+            server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=15)
+        else:
+            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15)
+            server.starttls()
+        server.login(SMTP_USER, SMTP_PASS)
+        server.sendmail(FROM_EMAIL, [to], msg.as_string())
+        server.quit()
+        return True
+    except Exception as e:
+        print(f"[Email] SMTP delivery error to {to}: {e}")
+        return False
+
+def send_verification_code(email: str, full_name: str, code: str) -> bool:
+    name = full_name or email.split("@")[0].capitalize()
+    plain = (f"Hello {name},\n\nYour Smart Ease verification code is {code}.\n"
+             "Enter it in the app to confirm your email address. The code expires in 30 minutes.\n\n"
+             "If you didn't create a Smart Ease account, you can ignore this email.")
+    html = f"""<!DOCTYPE html><html><body style="font-family:Segoe UI,Arial,sans-serif;background:#0b1120;margin:0;padding:24px;color:#f8fafc;">
+  <div style="max-width:480px;margin:0 auto;background:#0f172a;border:1px solid #1e293b;border-radius:12px;padding:28px;">
+    <h2 style="margin:0 0 12px;font-size:18px;">Confirm your email</h2>
+    <p style="color:#cbd5e1;font-size:14px;line-height:1.6;margin:0 0 18px;">Hello <strong>{name}</strong>, enter this code in Smart Ease to confirm your email address:</p>
+    <div style="font-size:32px;letter-spacing:8px;font-weight:700;text-align:center;background:#1e293b;border-radius:8px;padding:16px;color:#38bdf8;">{code}</div>
+    <p style="color:#94a3b8;font-size:12px;line-height:1.6;margin:18px 0 0;">The code expires in 30 minutes. If you didn't create a Smart Ease account, you can ignore this email.</p>
+  </div></body></html>"""
+    return send_email(email, f"Your Smart Ease code: {code}", plain, html)
 
 def dispatch_login_security_email(
     email: str,

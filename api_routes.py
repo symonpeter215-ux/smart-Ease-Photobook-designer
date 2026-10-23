@@ -1477,6 +1477,8 @@ async def card_checkout(payload: Dict[str, Any] = Body(...), user: Dict[str, Any
         email = user.get("email") or ""
         if not email:
             raise HTTPException(status_code=400, detail="Your account needs an email address before paying.")
+        if email_verification_required() and not _is_email_verified(conn, user["id"]):
+            raise HTTPException(status_code=403, detail="Please confirm your email address before paying.")
 
         tx_ref = f"SE{uuid.uuid4().hex[:16].upper()}"
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -1683,6 +1685,57 @@ def get_license_status(user_id: str, email: str, conn: Optional[Any] = None, pro
         "checkedAt": datetime.now(timezone.utc).isoformat(),
     }
 
+# ---------- Email verification ----------
+# Only enforced once SMTP is configured (otherwise nobody could ever receive a code).
+EMAIL_CODE_MINUTES = 30
+EMAIL_CODE_RESEND_SECONDS = 60
+EMAIL_CODE_MAX_ATTEMPTS = 5
+_email_code_attempts: Dict[str, int] = {}
+
+
+def email_verification_required() -> bool:
+    from email_service import is_smtp_configured
+    return is_smtp_configured()
+
+
+def _code_hash(user_id: str, code: str) -> str:
+    import hashlib
+    return hashlib.sha256(f"{user_id}:{code}".encode("utf-8")).hexdigest()
+
+
+def _is_email_verified(conn, user_id: str) -> bool:
+    row = conn.execute("SELECT email_verified, auth_provider FROM users WHERE id = ?", (user_id,)).fetchone()
+    return bool(row and (row["email_verified"] or row["auth_provider"] == "google"))
+
+
+def _mongo_set_user(user_id: str, fields: Dict[str, Any]):
+    try:
+        db = get_mongo_db()
+        if db is not None:
+            db["users"].update_one({"_id": user_id}, {"$set": fields})
+    except Exception as e:
+        print(f"[MongoDB] user update error: {e}")
+
+
+def issue_email_code(conn, user_id: str, email: str, full_name: str) -> bool:
+    """Creates a fresh 6-digit code for the user and emails it. Returns whether it was sent."""
+    import secrets
+    code = f"{secrets.randbelow(1000000):06d}"
+    now = datetime.now(timezone.utc)
+    fields = {
+        "email_code_hash": _code_hash(user_id, code),
+        "email_code_expires": (now + timedelta(minutes=EMAIL_CODE_MINUTES)).isoformat(),
+        "email_code_sent_at": now.isoformat(),
+    }
+    with conn:
+        conn.execute("UPDATE users SET email_code_hash = ?, email_code_expires = ?, email_code_sent_at = ? WHERE id = ?",
+                     (fields["email_code_hash"], fields["email_code_expires"], fields["email_code_sent_at"], user_id))
+    _mongo_set_user(user_id, fields)
+    _email_code_attempts.pop(user_id, None)
+    from email_service import send_verification_code
+    return send_verification_code(email, full_name, code)
+
+
 def _auth_response(user_id: str, email: str, name: str, auth_provider: str, conn, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     license_info = get_license_status(user_id, email, conn)
     user = {
@@ -1695,6 +1748,8 @@ def _auth_response(user_id: str, email: str, name: str, auth_provider: str, conn
         "status": "active" if license_info["active"] else "locked",
         "packageName": license_info["packageName"] or "No active license",
         "lifetimePro": license_info["lifetime"],
+        "emailVerified": _is_email_verified(conn, user_id),
+        "emailVerificationRequired": email_verification_required(),
     }
     if extra:
         user.update(extra)
@@ -1777,7 +1832,10 @@ async def register_auth_user(payload: Dict[str, Any] = Body(...)):
             print(f"[MongoDB] Error upserting user: {me}")
 
     try:
-        return _auth_response(user_id, email, full_name, "email", conn)
+        sent = issue_email_code(conn, user_id, email, full_name) if email_verification_required() else False
+        resp = _auth_response(user_id, email, full_name, "email", conn)
+        resp["verificationEmailSent"] = sent
+        return resp
     finally:
         conn.close()
 
@@ -2034,8 +2092,16 @@ async def google_auth_user(payload: Dict[str, Any] = Body(...)):
 
 
 @router.get("/auth/me")
-async def auth_me(product: str = Query(default="photobook"), user: Dict[str, Any] = Depends(require_user)):
-    """Current account and license. The desktop apps call this on start-up and periodically."""
+async def auth_me(product: str = Query(default="photobook"), device: Optional[str] = Query(default=None),
+                  user: Dict[str, Any] = Depends(require_user)):
+    """Current account and license. The desktop apps call this on start-up and periodically,
+    which also marks the customer as online in the admin console."""
+    product = "ease_select" if product in ("select", "ease_select") else "photobook"
+    try:
+        record_presence_heartbeat(account_id=user["smart_ease_account_id"], product=product,
+                                  mode="online", device_hostname=device)
+    except Exception as e:
+        print(f"[Presence] auth/me heartbeat warning: {e}")
     return {
         "success": True,
         "user": {
@@ -2043,9 +2109,55 @@ async def auth_me(product: str = Query(default="photobook"), user: Dict[str, Any
             "name": user.get("full_name"),
             "email": user.get("email"),
             "authProvider": user.get("auth_provider", "email"),
+            "emailVerified": bool(user.get("email_verified")) or user.get("auth_provider") == "google",
+            "emailVerificationRequired": email_verification_required(),
         },
         "license": get_license_status(user["id"], user.get("email") or "", product=product),
     }
+
+
+@router.post("/auth/verify-email")
+async def auth_verify_email(payload: Dict[str, Any] = Body(...), user: Dict[str, Any] = Depends(require_user)):
+    code = str(payload.get("code") or "").strip()
+    uid = user["id"]
+    if user.get("email_verified"):
+        return {"success": True, "emailVerified": True}
+    if _email_code_attempts.get(uid, 0) >= EMAIL_CODE_MAX_ATTEMPTS:
+        raise HTTPException(status_code=429, detail="Too many wrong codes. Please request a new code.")
+    expires = user.get("email_code_expires")
+    if not user.get("email_code_hash") or not expires or datetime.fromisoformat(expires) < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="This code has expired. Please request a new code.")
+    import hmac
+    if not hmac.compare_digest(_code_hash(uid, code), user["email_code_hash"]):
+        _email_code_attempts[uid] = _email_code_attempts.get(uid, 0) + 1
+        raise HTTPException(status_code=400, detail="That code is not correct. Please check the email and try again.")
+
+    conn = get_db_connection()
+    with conn:
+        conn.execute("UPDATE users SET email_verified = 1, email_code_hash = NULL, email_code_expires = NULL WHERE id = ?", (uid,))
+    conn.close()
+    _mongo_set_user(uid, {"email_verified": 1, "email_code_hash": None, "email_code_expires": None})
+    _email_code_attempts.pop(uid, None)
+    return {"success": True, "emailVerified": True}
+
+
+@router.post("/auth/resend-verification")
+async def auth_resend_verification(user: Dict[str, Any] = Depends(require_user)):
+    if user.get("email_verified"):
+        return {"success": True, "emailVerified": True}
+    if not email_verification_required():
+        raise HTTPException(status_code=503, detail="Email sending is not set up yet. Please contact Smart Ease support.")
+    sent_at = user.get("email_code_sent_at")
+    if sent_at and (datetime.now(timezone.utc) - datetime.fromisoformat(sent_at)).total_seconds() < EMAIL_CODE_RESEND_SECONDS:
+        raise HTTPException(status_code=429, detail="Please wait a minute before requesting another code.")
+    conn = get_db_connection()
+    try:
+        sent = issue_email_code(conn, user["id"], user.get("email") or "", user.get("full_name") or "")
+    finally:
+        conn.close()
+    if not sent:
+        raise HTTPException(status_code=502, detail="We couldn't send the email right now. Please try again shortly.")
+    return {"success": True, "sent": True}
 
 
 @router.post("/auth/logout")
