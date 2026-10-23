@@ -47,22 +47,10 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
             Revenue &amp; Earnings
           </button>
-          <button class="nav-tab" data-tab="connected-apps">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-            Connected Apps
-          </button>
         </nav>
       </div>
 
       <div class="header-right">
-        <a href="http://127.0.0.1:8765/index.html" target="_blank" class="btn btn-secondary btn-sm" id="btnHeaderOpenPb" title="Open running Photobook Studio on port 8765 in browser" style="display:inline-flex; align-items:center; gap:6px; text-decoration:none;">
-          <span class="pulse-dot"></span>
-          <span>Photobook Studio (8765) &nearr;</span>
-        </a>
-        <button class="btn btn-secondary btn-sm" id="btnSyncApps" title="Scan & Sync local Photobook & Ease Select identities">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-          Sync Apps
-        </button>
         <button class="btn btn-primary btn-sm" id="btnRecordPayment">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           Record Payment
@@ -181,13 +169,12 @@
           <div class="card-header flex-between">
             <div>
               <h2 class="card-title" style="display:flex; align-items:center; gap:8px;">
-                <span class="pulse-dot"></span> Live User Presence &bull; Online vs Uses Offline
+                <span class="pulse-dot"></span> Live User Presence
               </h2>
-              <p class="card-subtitle">Real-time presence monitoring of customers running Photobook &amp; Ease Select vs offline field mode</p>
+              <p class="card-subtitle">Customers with Photobook Designer or Ease Select open right now (apps check in every 5 minutes)</p>
             </div>
             <div class="flex-gap">
               <button class="btn btn-secondary btn-xs" id="btnGoToUsersOnline">View Online Users &rarr;</button>
-              <button class="btn btn-secondary btn-xs" id="btnGoToUsersOfflineMode">View Offline Mode Users &rarr;</button>
             </div>
           </div>
           <div class="card-body">
@@ -200,16 +187,6 @@
                 </div>
                 <div class="chip-title">Active Live Users</div>
                 <div class="chip-desc">Heartbeat ping received within last 10 minutes</div>
-              </div>
-
-              <!-- Chip 2: Uses Offline Mode -->
-              <div class="chip-card chip-offline-mode" id="chipPresenceOfflineMode" title="Click to filter users with offline license vouchers / leases">
-                <div class="chip-top">
-                  <span class="chip-badge badge-amber">🟠 Offline Mode</span>
-                  <span class="chip-count" style="color:#fbbf24;" id="countPresenceOfflineMode">-</span>
-                </div>
-                <div class="chip-title">Uses Offline Mode</div>
-                <div class="chip-desc">Licensed for field work with offline token lease</div>
               </div>
 
               <!-- Chip 3: Currently Offline -->
@@ -355,7 +332,7 @@
           <div class="card-header flex-between">
             <div>
               <h2 class="card-title">🔐 Live Login Activity <span class="badge badge-online" id="loginLiveBadge" style="margin-left:8px;"><span class="pulse-dot"></span> Live</span></h2>
-              <p class="card-subtitle">Every sign-in to Photobook Designer &amp; Ease Select, in real time. The user is notified by email on every sign-in.</p>
+              <p class="card-subtitle">Every sign-in to Photobook Designer &amp; Ease Select, in real time. "User Alerted" shows whether a sign-in email was sent (needs email sending set up).</p>
             </div>
             <span class="text-muted" id="loginCountLabel" style="font-size:0.8rem;">-</span>
           </div>
@@ -462,7 +439,6 @@
               <select id="filterConnection" class="select-control highlight-select">
                 <option value="all">All Presence States</option>
                 <option value="online">🟢 Online Now (Active Session)</option>
-                <option value="offline_mode">🟠 Uses Offline Mode (Voucher / Lease)</option>
                 <option value="offline">⚪ Currently Offline / Disconnected</option>
                 <option value="online_mode">🔵 Uses Online Sync</option>
               </select>
@@ -511,7 +487,7 @@
         <div class="card">
           <div class="card-header">
             <h2 class="card-title">Product &amp; Package Management</h2>
-            <p class="card-subtitle">Configure package pricing, view customer adoption, and monitor revenue per tier</p>
+            <p class="card-subtitle">Plans customers can buy by card, with customer counts and revenue per plan</p>
           </div>
 
           <div class="packages-grid" id="packagesGrid">
@@ -734,149 +710,6 @@
         </div>
       </section>
 
-      <!-- ============================================== -->
-      <!-- TAB 6: CONNECTED SMART EASE APPLICATIONS       -->
-      <!-- ============================================== -->
-      <section id="tab-connected-apps" class="tab-panel">
-        <div class="card">
-          <div class="card-header">
-            <h2 class="card-title">Connected Smart Ease Applications</h2>
-            <p class="card-subtitle">Monitor and sync customer data from your Photobook and Ease Select desktop installations</p>
-          </div>
-
-          <div class="connected-apps-grid">
-            <!-- Cloud Backend: Render Production Server & MongoDB Atlas -->
-            <div class="app-connection-card" style="border: 1.5px solid rgba(99, 102, 241, 0.4); background: linear-gradient(180deg, rgba(99, 102, 241, 0.05) 0%, rgba(15, 23, 42, 0.6) 100%); grid-column: 1 / -1;">
-              <div class="app-header-strip">
-                <div class="app-icon" style="background: linear-gradient(135deg, #6366f1, #a855f7); color: #fff; font-weight: 700; font-size:1.1rem; display:flex; align-items:center; justify-content:center;">☁️</div>
-                <div>
-                  <h3 style="display:flex; align-items:center; gap:8px;">
-                    Render Production Cloud Server
-                    <span style="font-size:0.75rem; background:rgba(99, 102, 241, 0.2); color:#a5b4fc; padding:2px 8px; border-radius:12px; border:1px solid rgba(99,102,241,0.3);">Primary Cloud Backend</span>
-                  </h3>
-                  <span class="app-port-badge" style="color:#a5b4fc;">https://smart-ease-photobook-designer.onrender.com &bull; MongoDB Atlas</span>
-                </div>
-                <span class="status-indicator online" id="statusRenderIndicator">Checking Cloud...</span>
-              </div>
-              <div class="app-card-body" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:12px;">
-                <div class="info-line"><strong>Live Server URL:</strong> <code style="word-break:break-all;">https://smart-ease-photobook-designer.onrender.com</code></div>
-                <div class="info-line"><strong>Database Engine:</strong> <span class="badge badge-active" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid #10b981;">MongoDB Atlas (smart_ease_subscriptions)</span></div>
-                <div class="info-line"><strong>Cloud Status:</strong> <span id="txtRenderStatus">Online</span> <span id="badgeRenderLatency" style="display:none; font-size:0.7rem; padding:2px 6px; border-radius:4px; margin-left:6px;" class="badge badge-online"></span></div>
-                <div class="info-line"><strong>Database State:</strong> <span id="txtRenderMongo">Connected to MongoDB Atlas</span></div>
-                <div class="info-line"><strong>Client SDK URL:</strong> <code>CLOUD_MANAGER_URL (Primary Target for Photobook &amp; Ease Select)</code></div>
-                <div class="info-line"><strong>Live Cloud Data:</strong> <span id="txtRenderDataSummary">9 Verified Users &bull; 7 Active Subscriptions &bull; 16 Transactions</span></div>
-              </div>
-              <div class="app-card-footer flex-between flex-wrap gap-8" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-top:12px;">
-                <div class="flex-gap" style="display:flex; gap:8px; flex-wrap:wrap;">
-                  <button class="btn btn-secondary btn-sm" id="btnPingRender" title="Ping live Render Cloud server to measure latency">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 14 14"/></svg>
-                    Ping Render Server
-                  </button>
-                  <button class="btn btn-primary btn-sm" id="btnSyncRender" title="Pull latest users, subscriptions, and transactions from Render Cloud MongoDB">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-                    Sync Cloud Data to Local
-                  </button>
-                </div>
-                <div class="flex-gap" style="display:flex; gap:8px;">
-                  <a href="https://smart-ease-photobook-designer.onrender.com" target="_blank" class="btn btn-secondary btn-sm" id="btnOpenRender" title="Open live Render Cloud application">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                    Open Render Cloud &nearr;
-                  </a>
-                </div>
-              </div>
-            </div>
-
-            <!-- App 1: Smart Ease Photobook Designer -->
-            <div class="app-connection-card">
-              <div class="app-header-strip">
-                <div class="app-icon icon-photobook">PB</div>
-                <div>
-                  <h3>Smart Ease Photobook Designer</h3>
-                  <span class="app-port-badge">Port 8765 &bull; Local Desktop</span>
-                </div>
-                <span class="status-indicator" id="statusPbIndicator">Checking...</span>
-              </div>
-              <div class="app-card-body">
-                <div class="info-line"><strong>Install Directory:</strong> <code>D:\Antigravity\photobook\version zero</code></div>
-                <div class="info-line"><strong>Identity Store:</strong> <code>%APPDATA%\SmartEasePhotobookStudio</code></div>
-                <div class="info-line"><strong>Real Server Status:</strong> <span id="txtPbServerStatus">Standby</span> <span id="badgePbLatency" style="display:none; font-size:0.7rem; padding:2px 6px; border-radius:4px; margin-left:6px;" class="badge badge-online"></span></div>
-                <div class="info-line"><strong>Live License Entitlement:</strong> <span id="txtPbLiveEntitlement">Checking...</span></div>
-                <div class="info-line"><strong>Detected Active Profile:</strong> <span id="txtPbUserProfile">Scanning...</span></div>
-              </div>
-              <div class="app-card-footer flex-between flex-wrap gap-8" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-                <div class="flex-gap" style="display:flex; gap:8px; flex-wrap:wrap;">
-                  <button class="btn btn-secondary btn-sm" id="btnTestPbConnection" title="Ping real server on port 8765">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 14 14"/></svg>
-                    Ping Real Server
-                  </button>
-                  <button class="btn btn-primary btn-sm" id="btnPushPbLicense" title="Push active license & unlock all buttons in Photobook">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"></path></svg>
-                    Push &amp; Unlock License
-                  </button>
-                </div>
-                <div class="flex-gap" style="display:flex; gap:8px;">
-                  <button class="btn btn-secondary btn-sm" id="btnOpenPbApp" title="Open running Photobook Studio interface in browser">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                    Open Photobook (8765) &nearr;
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <!-- App 2: Ease Select -->
-            <div class="app-connection-card">
-              <div class="app-header-strip">
-                <div class="app-icon icon-ease">ES</div>
-                <div>
-                  <h3>Ease Select</h3>
-                  <span class="app-port-badge">Port 8098 &bull; Local Desktop</span>
-                </div>
-                <span class="status-indicator" id="statusEsIndicator">Checking...</span>
-              </div>
-              <div class="app-card-body">
-                <div class="info-line"><strong>Install Directory:</strong> <code>D:\Antigravity\PixSelect</code></div>
-                <div class="info-line"><strong>Application Store:</strong> <code>%APPDATA%\SmartEase</code></div>
-                <div class="info-line"><strong>Server Status:</strong> <span id="txtEsServerStatus">Standby</span></div>
-                <div class="info-line"><strong>Sync Integration:</strong> <span>Ready for REST calls</span></div>
-              </div>
-              <div class="app-card-footer">
-                <button class="btn btn-secondary btn-sm" id="btnTestEsConnection">Test Connection</button>
-              </div>
-            </div>
-          </div>
-
-          <!-- Instant Local Scanner Box -->
-          <div class="sync-banner mt-24">
-            <div class="sync-banner-text">
-              <h3>One-Click Local App Auto-Discovery</h3>
-              <p>Automatically scans Photobook's local identity profiles, checks account tokens, and adds or refreshes registered customers in this Subscription Manager.</p>
-            </div>
-            <button class="btn btn-primary" id="btnTriggerAutoSync">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-              Scan &amp; Sync Local Apps Now
-            </button>
-          </div>
-
-          <!-- Live License Verification Test Tool -->
-          <div class="card mt-24">
-            <div class="card-header">
-              <h3 class="card-title">Live Client License Verification Tester</h3>
-              <p class="card-subtitle">Test how Photobook Designer or Ease Select validates access through the Subscription Manager API</p>
-            </div>
-            <div class="card-body">
-              <div class="flex-gap align-center flex-wrap">
-                <input type="text" id="testAccountIdInput" class="text-input" placeholder="Enter Account ID or Email (e.g. a6c0fee1d5422ef8)" style="flex:1; min-width:280px;">
-                <select id="testProductSelect" class="select-control">
-                  <option value="photobook">Smart Ease Photobook Designer</option>
-                  <option value="ease_select">Ease Select</option>
-                </select>
-                <button class="btn btn-secondary" id="btnRunLicenseTest">Verify License</button>
-              </div>
-              <div id="licenseTestResult" class="test-result-box mt-16" style="display:none;"></div>
-            </div>
-          </div>
-        </div>
-      </section>
 
     </main>
   </div>
@@ -918,10 +751,10 @@
         <div class="form-group">
           <label>Package / License:</label>
           <select id="payPackageSelect" class="select-control w-100" required>
-            <option value="pkg_photobook">Smart Ease Photobook Designer ($2.45 / mo)</option>
-            <option value="pkg_bundle">Smart Ease Photobook Designer + Ease Select ($3.00 / mo)</option>
-            <option value="pkg_ease_select">Ease Select ($2.45 / mo)</option>
-            <option value="pkg_lifetime">Lifetime Pro ($200.00 Permanent)</option>
+            <option value="pkg_photobook">Smart Ease Photobook Designer</option>
+            <option value="pkg_bundle">Smart Ease Photobook Designer + Ease Select</option>
+            <option value="pkg_ease_select">Ease Select</option>
+            <option value="pkg_lifetime">Lifetime Pro (lifetime, no days needed)</option>
           </select>
         </div>
         <div class="form-group">

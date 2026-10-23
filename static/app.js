@@ -5,7 +5,11 @@
 
 // Direct Online Cloud Connection (NO local server needed)
 const PROD_API_BASE = 'https://smart-ease-photobook-designer.onrender.com';
-const API_BASE = window.location.hostname.includes('onrender.com') ? '' : PROD_API_BASE;
+// Served by the Render server -> same origin. Opened elsewhere -> talk to production
+// (set localStorage 'se_api_same_origin' = '1' to test against a locally running server).
+let _sameOriginApi = false;
+try { _sameOriginApi = localStorage.getItem('se_api_same_origin') === '1'; } catch (_) {}
+const API_BASE = (window.location.hostname.includes('onrender.com') || _sameOriginApi) ? '' : PROD_API_BASE;
 
 const _nativeFetch = window.fetch;
 const ADMIN_TOKEN_KEY = 'se_admin_token';
@@ -102,7 +106,6 @@ document.addEventListener('DOMContentLoaded', () => {
   initPackages();
   initSubscriptions();
   initRevenue();
-  initConnectedApps();
 
   // Initial Data Load
   loadDashboardData();
@@ -156,7 +159,6 @@ function switchTab(tabId) {
   else if (tabId === 'packages') loadPackagesData();
   else if (tabId === 'subscriptions') loadSubscriptionsData();
   else if (tabId === 'revenue') loadRevenueData();
-  else if (tabId === 'connected-apps') loadConnectedAppsData();
 }
 
 // ==========================================
@@ -232,11 +234,9 @@ function initDashboard() {
   };
 
   setupPresenceChip('chipPresenceOnline', 'online');
-  setupPresenceChip('chipPresenceOfflineMode', 'offline_mode');
   setupPresenceChip('chipPresenceOffline', 'offline');
   setupPresenceChip('chipPresenceRecent', 'all');
   setupPresenceChip('btnGoToUsersOnline', 'online');
-  setupPresenceChip('btnGoToUsersOfflineMode', 'offline_mode');
 }
 
 async function loadDashboardData() {
@@ -464,14 +464,6 @@ function renderUsersTable(users) {
       presenceHtml = `
         <span class="badge badge-online"><span class="pulse-dot"></span> Online</span>
         <div style="font-size:0.72rem; color:#10b981; margin-top:2px; font-weight:500;">${escapeHtml(u.last_app || 'App')} &bull; ${escapeHtml(u.last_seen_relative)}</div>
-        ${u.connection_mode === 'offline_mode' ? '<span class="badge badge-amber" style="font-size:0.65rem; padding:1px 5px; margin-top:2px;">Field Lease</span>' : ''}
-      `;
-    } else if (u.connection_mode === 'offline_mode') {
-      const leaseDate = u.offline_lease_until ? u.offline_lease_until.split('T')[0] : 'Token Active';
-      presenceHtml = `
-        <span class="badge badge-amber">🟠 Uses Offline Mode</span>
-        <div style="font-size:0.72rem; color:#fbbf24; margin-top:2px; font-weight:500;">Lease: ${escapeHtml(leaseDate)}</div>
-        <div style="font-size:0.7rem; color:#94a3b8;">Last: ${escapeHtml(u.last_seen_relative)}</div>
       `;
     } else {
       presenceHtml = `
@@ -546,22 +538,14 @@ async function openUserDetail(userId) {
           })()}</div>
           <div style="font-size:0.86rem; margin-top:4px;"><strong>Notes:</strong> ${escapeHtml(u.notes || '-')}</div>
         </div>
-        <div class="info-box" style="background:rgba(0,0,0,0.2); padding:14px; border-radius:8px; border:1px solid rgba(255,255,255,0.08); border-left: 3px solid ${u.is_online ? '#10b981' : (u.connection_mode === 'offline_mode' ? '#f59e0b' : '#64748b')};">
+        <div class="info-box" style="background:rgba(0,0,0,0.2); padding:14px; border-radius:8px; border:1px solid rgba(255,255,255,0.08); border-left: 3px solid ${u.is_online ? '#10b981' : '#64748b'};">
           <div style="display:flex; justify-content:space-between; align-items:center;">
             <div style="font-size:0.75rem; color:#94a3b8; text-transform:uppercase;">Live Presence &amp; Connectivity</div>
             ${u.is_online ? '<span class="badge badge-online"><span class="pulse-dot"></span> Online Now</span>' : '<span class="badge badge-offline">⚪ Offline</span>'}
           </div>
-          <div style="margin-top:8px; font-size:0.86rem;"><strong>Current Mode:</strong> ${u.connection_mode === 'offline_mode' ? '<span class="badge badge-amber">🟠 Uses Offline Mode</span>' : '<span class="badge badge-blue">🔵 Online Sync</span>'}</div>
-          <div style="font-size:0.86rem; margin-top:4px;"><strong>Active Client App:</strong> ${escapeHtml(u.last_app || u.source_app || 'Photobook')} <span style="color:#94a3b8; font-size:0.75rem;">(${escapeHtml(u.app_version || 'v2.1')})</span></div>
+          <div style="margin-top:8px; font-size:0.86rem;"><strong>Active Client App:</strong> ${escapeHtml(u.last_app || u.source_app || 'Photobook')} <span style="color:#94a3b8; font-size:0.75rem;">(${escapeHtml(u.app_version || 'v2.1')})</span></div>
           <div style="font-size:0.86rem; margin-top:4px;"><strong>Last Heartbeat:</strong> ${escapeHtml(u.last_seen || 'Never')} <span style="color:#94a3b8; font-size:0.75rem;">(${escapeHtml(u.last_seen_relative)})</span></div>
           <div style="font-size:0.86rem; margin-top:4px;"><strong>IP &amp; Device:</strong> <code>${escapeHtml(u.last_ip || '127.0.0.1')}</code> / <code>${escapeHtml(u.device_hostname || '-')}</code></div>
-          ${u.connection_mode === 'offline_mode' ? `<div style="font-size:0.86rem; margin-top:4px; color:#fbbf24;"><strong>Field Lease Expiry:</strong> ${escapeHtml((u.offline_lease_until || '').replace('T', ' '))}</div>` : ''}
-          <div style="margin-top:10px; padding-top:8px; border-top:1px dashed rgba(255,255,255,0.1); display:flex; gap:8px;">
-            ${u.connection_mode === 'offline_mode' ? 
-              `<button class="btn btn-secondary btn-xs" onclick="toggleUserConnectionMode('${escapeHtml(u.id)}', 'online')">Switch to Online Sync Mode</button>` : 
-              `<button class="btn btn-warning btn-xs" onclick="toggleUserConnectionMode('${escapeHtml(u.id)}', 'offline_mode')">Grant 30-Day Offline Field Mode</button>`
-            }
-          </div>
         </div>
       </div>
 
@@ -661,34 +645,6 @@ async function openUserDetail(userId) {
   }
 }
 
-async function toggleUserConnectionMode(userId, targetMode) {
-  try {
-    const res = await fetch(`/api/v1/users/${userId}/toggle-mode`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: targetMode, lease_days: 30 })
-    });
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.detail || 'Failed to update connection mode');
-    }
-    const result = await res.json();
-    showToast(`User switched to ${targetMode === 'offline_mode' ? 'Offline Mode (30-day lease granted)' : 'Online Sync Mode'}`);
-    await loadUsersData();
-    await loadDashboardData();
-    await openUserDetail(userId);
-  } catch (err) {
-    showToast('Failed to switch mode: ' + err.message, 'error');
-  }
-}
-    `;
-
-    document.getElementById('modalUserDetail').classList.add('open');
-  } catch (err) {
-    showToast('Failed to load user details: ' + err.message, 'error');
-  }
-}
-
 // ==========================================
 // 3. PRODUCT & PACKAGE MANAGEMENT
 // ==========================================
@@ -711,29 +667,24 @@ function renderPackagesGrid(pkgs) {
   const grid = document.getElementById('packagesGrid');
   if (!grid) return;
 
-  grid.innerHTML = pkgs.map(p => {
-    const isLifetime = p.billing_type === 'one_time' || p.billing_interval === 'lifetime';
+  // Prices customers pay are the card-payment options set on the server (LivePay needs $10+ per payment).
+  const sorted = [...pkgs].sort((a, b) => (a.sort_order ?? 99) - (b.sort_order ?? 99));
+  grid.innerHTML = sorted.map(p => {
+    const options = Array.isArray(p.options) ? p.options : [];
+    const onSale = p.for_sale !== false && options.length > 0;
     return `
-      <div class="pkg-card ${isLifetime ? 'highlight' : ''}">
-        <div class="pkg-type-badge ${isLifetime ? 'pkg-type-lifetime' : 'pkg-type-recurring'}">
-          ${isLifetime ? 'One-Time Purchase &bull; Permanent Licence' : 'Recurring Subscription &bull; Monthly'}
+      <div class="pkg-card ${onSale ? '' : 'highlight'}">
+        <div class="pkg-type-badge ${onSale ? 'pkg-type-recurring' : 'pkg-type-lifetime'}">
+          ${onSale ? 'On sale &bull; Card payment' : 'Not for sale &bull; Existing holders keep access'}
         </div>
         <h3 class="pkg-title">${escapeHtml(p.name)}</h3>
-        <div class="pkg-price-wrap">
-          <span class="pkg-price">${fmtUSD(p.price)}</span>
-          <span class="pkg-cycle">${isLifetime ? 'one-time' : '/ month'}</span>
-        </div>
-        <p class="pkg-desc">${escapeHtml(p.description || '')}</p>
-        
+        ${onSale
+          ? `<div style="display:flex;flex-direction:column;gap:4px;margin:8px 0;">${options.map(o =>
+              `<div style="display:flex;justify-content:space-between;font-size:0.9rem;"><span>${o.months} months</span><strong>${fmtUSD(o.price)}</strong></div>`).join('')}</div>`
+          : `<p class="pkg-desc">Can still be given from Record Payment &rarr; Free access.</p>`}
         <div class="pkg-stats-strip">
           <div>Customers: <strong>${p.customer_count || 0}</strong></div>
           <div>Total Revenue: <strong>${fmtUSD(p.total_revenue)}</strong></div>
-        </div>
-
-        <div style="margin-top:16px;">
-          <button class="btn btn-secondary btn-sm w-100" onclick="openEditPackageModal('${escapeHtml(p.id)}', '${escapeHtml(p.name)}', ${p.price}, '${escapeHtml(p.description || '')}')">
-            Edit Package Price
-          </button>
         </div>
       </div>
     `;
@@ -944,292 +895,6 @@ function renderAllTransactionsTable(txns) {
 }
 
 // ==========================================
-// 6. CONNECTED APPS
-// ==========================================
-function initConnectedApps() {
-  const btnPingRender = document.getElementById('btnPingRender');
-  const btnSyncRender = document.getElementById('btnSyncRender');
-
-  if (btnPingRender) {
-    btnPingRender.addEventListener('click', async () => {
-      try {
-        btnPingRender.classList.add('spinning');
-        btnPingRender.disabled = true;
-        showToast('Pinging Render Cloud Server & MongoDB Atlas...', 'info');
-        const res = await fetch('/api/v1/apps/render/ping');
-        const data = await res.json();
-        if (data.online) {
-          showToast(`✓ Render Cloud Connected! Latency: ${data.latency_ms}ms • MongoDB Atlas Online`, 'success');
-        } else {
-          showToast(`Render Cloud offline / waking up: ${data.message || 'Server timeout'}`, 'warning');
-        }
-        await loadConnectedAppsData();
-      } catch (err) {
-        showToast('Render ping error: ' + err.message, 'error');
-      } finally {
-        btnPingRender.classList.remove('spinning');
-        btnPingRender.disabled = false;
-      }
-    });
-  }
-
-  if (btnSyncRender) {
-    btnSyncRender.addEventListener('click', async () => {
-      try {
-        btnSyncRender.classList.add('spinning');
-        btnSyncRender.disabled = true;
-        showToast('Pulling latest users, subscriptions & transactions from Render Cloud...', 'info');
-        const res = await fetch('/api/v1/apps/render/sync', { method: 'POST' });
-        const data = await res.json();
-        if (data.status === 'success') {
-          showToast(data.message || '✓ Synchronized data from Render Cloud!', 'success');
-          await loadConnectedAppsData();
-          await loadUsersData();
-          await loadDashboardData();
-          await loadSubscriptionsData();
-          await loadRevenueData();
-        } else {
-          showToast('Sync warning: ' + (data.message || 'Could not complete sync'), 'warning');
-        }
-      } catch (err) {
-        showToast('Render sync error: ' + err.message, 'error');
-      } finally {
-        btnSyncRender.classList.remove('spinning');
-        btnSyncRender.disabled = false;
-      }
-    });
-  }
-
-  const btnTriggerSync = document.getElementById('btnTriggerAutoSync');
-  const btnHeaderSync = document.getElementById('btnSyncApps');
-  const btnTestPb = document.getElementById('btnTestPbConnection');
-  const btnTestEs = document.getElementById('btnTestEsConnection');
-  const btnLicenseTest = document.getElementById('btnRunLicenseTest');
-
-  const runSync = async () => {
-    const syncButtons = [btnTriggerSync, btnHeaderSync].filter(Boolean);
-    syncButtons.forEach(b => {
-      b.classList.add('spinning');
-      b.disabled = true;
-    });
-    try {
-      showToast('Scanning local Photobook & Ease Select installations...', 'info');
-      const res = await fetch('/api/v1/apps/sync-local', { method: 'POST' });
-      const data = await res.json();
-      showToast(`Scan complete: ${data.synced_records} records synchronized!`, 'success');
-      loadConnectedAppsData();
-      loadUsersData();
-      loadDashboardData();
-      loadSubscriptionsData();
-      loadRevenueData();
-    } catch (err) {
-      showToast('Sync failed: ' + err.message, 'error');
-    } finally {
-      syncButtons.forEach(b => {
-        b.classList.remove('spinning');
-        b.disabled = false;
-      });
-    }
-  };
-
-  if (btnTriggerSync) btnTriggerSync.addEventListener('click', runSync);
-  if (btnHeaderSync) btnHeaderSync.addEventListener('click', runSync);
-
-  const btnPushPbLicense = document.getElementById('btnPushPbLicense');
-  const btnOpenPb = document.getElementById('btnOpenPbApp');
-
-  if (btnTestPb) {
-    btnTestPb.addEventListener('click', async () => {
-      try {
-        btnTestPb.classList.add('spinning');
-        btnTestPb.disabled = true;
-        const res = await fetch('/api/v1/apps/photobook/ping');
-        const data = await res.json();
-        if (data.online) {
-          showToast(`✓ Photobook Real Server Connected! Latency: ${data.latency_ms}ms`, 'success');
-        } else {
-          showToast(`Photobook server offline: ${data.message || 'Port 8765 not responding'}`, 'error');
-        }
-        await loadConnectedAppsData();
-      } catch (err) {
-        showToast('Ping error: ' + err.message, 'error');
-      } finally {
-        btnTestPb.classList.remove('spinning');
-        btnTestPb.disabled = false;
-      }
-    });
-  }
-
-  if (btnPushPbLicense) {
-    btnPushPbLicense.addEventListener('click', async () => {
-      try {
-        btnPushPbLicense.classList.add('spinning');
-        btnPushPbLicense.disabled = true;
-        showToast('Pushing active license to Photobook Studio on port 8765...', 'info');
-        const res = await fetch('/api/v1/apps/photobook/push-license', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ licenseKey: 'SE-LIFETIME-PRO', email: 'studio@rafiapictures.com' })
-        });
-        const data = await res.json();
-        if (data.success) {
-          showToast(data.message || '✓ License activated in Photobook! All buttons & features unlocked.', 'success');
-        } else {
-          showToast(data.message || data.error || 'Failed to push license', 'error');
-        }
-        await loadConnectedAppsData();
-        await loadDashboardData();
-        await loadUsersData();
-      } catch (err) {
-        showToast('Push error: ' + err.message, 'error');
-      } finally {
-        btnPushPbLicense.classList.remove('spinning');
-        btnPushPbLicense.disabled = false;
-      }
-    });
-  }
-
-  if (btnOpenPb) {
-    btnOpenPb.addEventListener('click', () => {
-      window.open('http://127.0.0.1:8765/index.html', '_blank');
-    });
-  }
-
-  if (btnTestEs) btnTestEs.addEventListener('click', loadConnectedAppsData);
-
-  if (btnLicenseTest) {
-    btnLicenseTest.addEventListener('click', async () => {
-      const accountId = document.getElementById('testAccountIdInput')?.value.trim();
-      const product = document.getElementById('testProductSelect')?.value || 'photobook';
-      const resultBox = document.getElementById('licenseTestResult');
-
-      if (!accountId) {
-        showToast('Please enter an account ID or email to test', 'error');
-        return;
-      }
-
-      try {
-        const res = await fetch('/api/v1/client/verify-license', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ account_id: accountId, product: product })
-        });
-        const data = await res.json();
-        resultBox.style.display = 'block';
-        resultBox.innerHTML = `
-          <div style="font-size:0.9rem; margin-bottom:8px;">
-            Verification Result for <strong>${escapeHtml(accountId)}</strong> on <strong>${product}</strong>:
-          </div>
-          <div style="font-size:0.84rem; line-height:1.6;">
-            Access Granted: <strong class="${data.has_access ? 'text-emerald' : 'text-red'}">${data.has_access ? 'YES (Authorized)' : 'NO (Denied)'}</strong><br>
-            License Status: <strong>${escapeHtml(data.status)}</strong><br>
-            Package: <strong>${escapeHtml(data.package_name || 'None')}</strong><br>
-            Expiry: <strong>${escapeHtml(data.expiry_date || (data.is_lifetime ? 'Permanent / Lifetime' : 'N/A'))}</strong><br>
-            Customer Name: <strong>${escapeHtml(data.customer_name || 'N/A')}</strong><br>
-            Message: <em>${escapeHtml(data.message)}</em>
-          </div>
-        `;
-      } catch (err) {
-        showToast('License test error: ' + err.message, 'error');
-      }
-    });
-  }
-}
-
-async function loadConnectedAppsData() {
-  try {
-    const res = await fetch('/api/v1/apps/status');
-    if (!res.ok) throw new Error('Failed to fetch apps status');
-    const data = await res.json();
-
-    // Render Cloud Server
-    const rc = data.render_cloud;
-    const indRc = document.getElementById('statusRenderIndicator');
-    const txtRcStatus = document.getElementById('txtRenderStatus');
-    const badgeRcLatency = document.getElementById('badgeRenderLatency');
-    const txtRcMongo = document.getElementById('txtRenderMongo');
-
-    if (rc && rc.is_online) {
-      if (indRc) {
-        indRc.className = 'status-indicator online';
-        indRc.textContent = 'Live Cloud Active';
-      }
-      if (txtRcStatus) {
-        txtRcStatus.innerHTML = '<span class="text-emerald">Online &bull; Live Handshake Verified</span>';
-      }
-      if (rc.telemetry && rc.telemetry.latency_ms !== undefined && badgeRcLatency) {
-        badgeRcLatency.style.display = 'inline-block';
-        badgeRcLatency.textContent = `${rc.telemetry.latency_ms}ms ping`;
-      }
-      if (txtRcMongo) {
-        txtRcMongo.innerHTML = '<span class="badge badge-active" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid #10b981;">Connected to MongoDB Atlas</span>';
-      }
-    } else {
-      if (indRc) {
-        indRc.className = 'status-indicator offline';
-        indRc.textContent = 'Standby / Connecting...';
-      }
-      if (txtRcStatus) {
-        txtRcStatus.innerHTML = '<span class="text-muted">Standby (Waking up)</span>';
-      }
-      if (badgeRcLatency) badgeRcLatency.style.display = 'none';
-    }
-
-    // Photobook Designer
-    const pb = data.photobook;
-    const indPb = document.getElementById('statusPbIndicator');
-    const txtPbStatus = document.getElementById('txtPbServerStatus');
-    const txtPbUser = document.getElementById('txtPbUserProfile');
-    const badgePbLatency = document.getElementById('badgePbLatency');
-    const txtPbEntitlement = document.getElementById('txtPbLiveEntitlement');
-
-    if (pb.is_running) {
-      indPb.className = 'status-indicator online';
-      indPb.textContent = 'Active (Port 8765)';
-      txtPbStatus.innerHTML = '<span class="text-emerald">Online &bull; Live Handshake Active</span>';
-      if (pb.telemetry && pb.telemetry.latency_ms !== undefined) {
-        if (badgePbLatency) {
-          badgePbLatency.style.display = 'inline-block';
-          badgePbLatency.textContent = `${pb.telemetry.latency_ms}ms ping`;
-        }
-        if (txtPbEntitlement) {
-          txtPbEntitlement.innerHTML = `<span class="badge badge-active">${escapeHtml(pb.telemetry.package || 'Studio Pro')} (${escapeHtml(pb.telemetry.license_status || 'active')})</span>`;
-        }
-      }
-    } else {
-      indPb.className = 'status-indicator offline';
-      indPb.textContent = 'Offline';
-      txtPbStatus.innerHTML = '<span class="text-muted">Standby (Not currently running)</span>';
-      if (badgePbLatency) badgePbLatency.style.display = 'none';
-      if (txtPbEntitlement) txtPbEntitlement.innerHTML = '<span class="text-muted">Server Offline</span>';
-    }
-
-    if (pb.detected_profile) {
-      txtPbUser.innerHTML = `<strong>${escapeHtml(pb.detected_profile.userName || 'User')}</strong> (<code>${escapeHtml(pb.detected_profile.userId)}</code>)`;
-    } else {
-      txtPbUser.textContent = 'None detected yet';
-    }
-
-    // Ease Select
-    const es = data.ease_select;
-    const indEs = document.getElementById('statusEsIndicator');
-    const txtEsStatus = document.getElementById('txtEsServerStatus');
-
-    if (es.is_running) {
-      indEs.className = 'status-indicator online';
-      indEs.textContent = 'Active (Port 8098)';
-      txtEsStatus.innerHTML = '<span class="text-emerald">Online &bull; Listening</span>';
-    } else {
-      indEs.className = 'status-indicator offline';
-      indEs.textContent = 'Offline';
-      txtEsStatus.innerHTML = '<span class="text-muted">Standby (Not currently running)</span>';
-    }
-  } catch (err) {
-    console.error('Connected apps error:', err);
-  }
-}
-
-// ==========================================
 // 7. MODALS CONTROLLER
 // ==========================================
 function initModals() {
@@ -1291,8 +956,8 @@ function initModals() {
 
     if (pkgSelect && state.packages && state.packages.length > 0) {
       pkgSelect.innerHTML = state.packages.map(p => {
-        const cycle = (p.billing_type === 'one_time' || p.billing_interval === 'lifetime') ? 'Permanent' : 'mo';
-        return `<option value="${escapeHtml(p.id)}" data-price="${p.price}">${escapeHtml(p.name)} (${fmtUSD(p.price)} / ${cycle})</option>`;
+        const lifetime = p.billing_type === 'one_time' || p.billing_interval === 'lifetime';
+        return `<option value="${escapeHtml(p.id)}" data-price="0">${escapeHtml(p.name)}${lifetime ? ' (lifetime, no days needed)' : ''}</option>`;
       }).join('');
     }
 

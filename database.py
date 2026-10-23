@@ -178,8 +178,8 @@ def init_db():
 
     # Seed default packages if not exist
     seed_initial_packages(conn)
-    # Check if we should seed default data
-    seed_initial_data(conn)
+    # (Demo customers from seed_initial_data are no longer created: they showed up as real
+    # customers and revenue in the admin console.)
     # Sync from MongoDB cloud if MONGODB_URI is provided
     sync_mongo_to_sqlite(conn)
     # Auto-recalculate subscription statuses
@@ -1006,15 +1006,19 @@ def record_user_login(
     if not full_name:
         full_name = email.split("@")[0].capitalize()
 
+    # Only claim the user was alerted if an email can actually be sent.
+    from email_service import is_smtp_configured
+    alerted = 1 if is_smtp_configured() else 0
+
     conn.execute("""
         INSERT INTO user_logins (
             id, user_id, email, full_name, product, device_hostname,
             ip_address, auth_method, login_time, status, alert_dispatched, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         login_id, user_id, email.lower(), full_name, product,
         device_hostname or "Desktop", ip_address or "127.0.0.1",
-        auth_method, now_iso, status, now_iso
+        auth_method, now_iso, status, alerted, now_iso
     ))
 
     if user_id:
@@ -1048,7 +1052,7 @@ def record_user_login(
                 "auth_method": auth_method,
                 "login_time": now_iso,
                 "status": status,
-                "alert_dispatched": 1,
+                "alert_dispatched": alerted,
                 "created_at": now_iso
             }
             db["user_logins"].replace_one({"_id": login_id}, doc, upsert=True)
@@ -1068,7 +1072,7 @@ def record_user_login(
         "auth_method": auth_method,
         "login_time": now_iso,
         "status": status,
-        "alert_dispatched": True
+        "alert_dispatched": bool(alerted)
     }
 
     if should_close:
