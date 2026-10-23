@@ -165,3 +165,32 @@ class SmartEaseSubscriptionClient:
             except Exception as e:
                 continue
         return {"status": "error", "message": "Failed to record subscription purchase"}
+
+    def record_login(self, email: str, user_id: Optional[str] = None, full_name: Optional[str] = None, auth_method: str = "password", timeout: float = 6.0) -> Dict[str, Any]:
+        """
+        Sends real-time sign-in event to Render Cloud Subscription Server.
+        Records login in the manager feed and dispatches a security notification email.
+        """
+        import socket
+        payload = {
+            "userId": user_id or "",
+            "email": email,
+            "fullName": full_name or "",
+            "authMethod": auth_method,
+            "deviceHostname": socket.gethostname(),
+            "sourceApp": "Smart Ease Photobook Designer" if self.product_name == "photobook" else "Ease Select"
+        }
+        for target_url in self._get_target_urls():
+            try:
+                req_data = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(
+                    f"{target_url}/api/v1/logins/record",
+                    data=req_data,
+                    headers={"Content-Type": "application/json", "User-Agent": "SmartEaseClient"}
+                )
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    if resp.status in (200, 201):
+                        return json.loads(resp.read().decode("utf-8"))
+            except Exception:
+                continue
+        return {"status": "offline_mode", "recorded": False}

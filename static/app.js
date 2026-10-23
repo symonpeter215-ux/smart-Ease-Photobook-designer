@@ -530,6 +530,7 @@ async function openUserDetail(userId) {
         </table>
       </div>
 
+      <div id="mudLoginHistory" style="margin-bottom:20px;"></div>
       <h4 style="font-size:0.9rem; margin-bottom:8px; color:#fff;">Payment Transaction History</h4>
       <div class="table-responsive" style="margin-bottom:20px;">
         <table class="data-table">
@@ -1389,3 +1390,105 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
 }
+
+
+// ==========================================
+// LIVE LOGIN ACTIVITY (real-time feed + alerts)
+// ==========================================
+const loginState = { seen: new Set(), primed: false };
+
+function loginMethodBadge(m) {
+  const v = String(m || 'email').toLowerCase();
+  if (v.includes('google')) return '<span class="badge badge-blue">Google</span>';
+  return '<span class="badge badge-neutral">Email &amp; Password</span>';
+}
+
+async function loadRecentLogins() {
+  const body = document.getElementById('recentLoginsBody');
+  try {
+    const res = await fetch('/api/v1/logins/recent?limit=25');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const logins = data.logins || [];
+
+    // Toast + notification for brand-new logins (skip the first load)
+    const fresh = logins.filter(l => l.id && !loginState.seen.has(l.id));
+    logins.forEach(l => l.id && loginState.seen.add(l.id));
+    if (loginState.primed && fresh.length) {
+      fresh.slice(0, 3).forEach(l => {
+        showToast(`🔐 New login: ${escapeHtml(l.full_name || l.email)} signed in to ${escapeHtml(l.product || 'app')}`, 'success');
+        try {
+          if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification('Smart Ease – New Login', { body: `${l.full_name || l.email} signed in to ${l.product || 'app'} on ${l.device_hostname || 'a device'}` });
+          }
+        } catch (e) {}
+      });
+    }
+    loginState.primed = true;
+
+    const lbl = document.getElementById('loginCountLabel');
+    if (lbl) lbl.textContent = `${logins.length} recent sign-ins`;
+    if (!body) return;
+    if (!logins.length) {
+      body.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No logins recorded yet. New sign-ins will appear here automatically.</td></tr>';
+      return;
+    }
+    body.innerHTML = logins.map(l => `
+      <tr${fresh.some(f => f.id === l.id) ? ' style="background:rgba(16,185,129,0.08);"' : ''}>
+        <td>${escapeHtml(l.login_time || '-')}</td>
+        <td><strong>${escapeHtml(l.full_name || '-')}</strong></td>
+        <td>${escapeHtml(l.email || '-')}</td>
+        <td>${escapeHtml(l.product || '-')}</td>
+        <td><code>${escapeHtml(l.device_hostname || '-')}</code></td>
+        <td>${loginMethodBadge(l.auth_method)}</td>
+        <td>${l.alert_dispatched ? '<span class="badge badge-active">✓ Notified</span>' : '<span class="badge badge-neutral">-</span>'}</td>
+      </tr>`).join('');
+  } catch (err) {
+    if (body && !loginState.primed) {
+      body.innerHTML = `<tr><td colspan="7" class="text-center text-muted">Could not load login activity (${escapeHtml(err.message)}). Retrying…</td></tr>`;
+    }
+  }
+}
+
+async function loadUserLoginHistory(userId) {
+  const box = document.getElementById('mudLoginHistory');
+  if (!box) return;
+  box.innerHTML = '<h4 style="font-size:0.9rem; margin-bottom:8px; color:#fff;">Login History</h4><div class="text-muted" style="font-size:0.85rem;">Loading…</div>';
+  try {
+    const res = await fetch(`/api/v1/users/${encodeURIComponent(userId)}/logins?limit=15`);
+    const data = await res.json();
+    const rows = data.logins || [];
+    box.innerHTML = `
+      <h4 style="font-size:0.9rem; margin-bottom:8px; color:#fff;">Login History</h4>
+      <div class="table-responsive"><table class="data-table">
+        <thead><tr><th>Time (UTC)</th><th>App</th><th>Device</th><th>Method</th><th>Alert</th></tr></thead>
+        <tbody>${rows.length ? rows.map(l => `
+          <tr>
+            <td>${escapeHtml(l.login_time || '-')}</td>
+            <td>${escapeHtml(l.product || '-')}</td>
+            <td><code>${escapeHtml(l.device_hostname || '-')}</code></td>
+            <td>${loginMethodBadge(l.auth_method)}</td>
+            <td>${l.alert_dispatched ? '<span class="badge badge-active">✓ Emailed</span>' : '-'}</td>
+          </tr>`).join('') : '<tr><td colspan="5" class="text-center text-muted">No logins recorded for this customer yet</td></tr>'}
+        </tbody></table></div>`;
+  } catch (e) {
+    box.innerHTML = '';
+  }
+}
+
+// Hook login history into the customer profile modal
+if (typeof openUserDetail === 'function') {
+  const _origOpenUserDetail = openUserDetail;
+  openUserDetail = async function (userId) {
+    await _origOpenUserDetail(userId);
+    loadUserLoginHistory(userId);
+  };
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
+  } catch (e) {}
+  loadRecentLogins();
+  setInterval(loadRecentLogins, 10000); // poll every 10s for new sign-ins
+});

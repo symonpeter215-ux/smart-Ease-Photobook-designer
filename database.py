@@ -143,6 +143,26 @@ def init_db():
             );
         """)
 
+                # 7. User Logins & Security Activity Table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_logins (
+                id TEXT PRIMARY KEY,
+                user_id TEXT,
+                email TEXT NOT NULL,
+                full_name TEXT,
+                product TEXT NOT NULL DEFAULT 'Smart Ease Photobook Designer',
+                device_hostname TEXT,
+                ip_address TEXT,
+                auth_method TEXT NOT NULL DEFAULT 'email',
+                login_time TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'SUCCESS',
+                alert_dispatched INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            );
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_logins_email ON user_logins(email);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_logins_time ON user_logins(login_time);")
+
         # Create helpful indexes
         conn.execute("CREATE INDEX IF NOT EXISTS idx_subs_user_id ON subscriptions(user_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_subs_status ON subscriptions(status);")
@@ -897,3 +917,164 @@ def get_presence_metrics(conn: Optional[sqlite3.Connection] = None) -> Dict[str,
         "recent_active_today": recent_active_today
     }
 
+
+
+# ==========================================
+# 7. USER LOGINS & SECURITY ACTIVITY LOGGING
+# ==========================================
+
+def record_user_login(
+    email: str,
+    full_name: Optional[str] = None,
+    product: str = "Smart Ease Photobook Designer",
+    device_hostname: Optional[str] = None,
+    auth_method: str = "email",
+    ip_address: Optional[str] = None,
+    user_id: Optional[str] = None,
+    status: str = "SUCCESS",
+    conn: Optional[sqlite3.Connection] = None
+) -> Dict[str, Any]:
+    import uuid
+    should_close = False
+    if conn is None:
+        conn = get_db_connection()
+        should_close = True
+
+    login_id = f"LGN-{uuid.uuid4().hex[:8].upper()}"
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    cursor = conn.cursor()
+    if not user_id:
+        cursor.execute("SELECT id, full_name FROM users WHERE LOWER(email) = ?", (email.lower(),))
+        row = cursor.fetchone()
+        if row:
+            user_id = row["id"]
+            if not full_name:
+                full_name = row["full_name"]
+
+    if not full_name:
+        full_name = email.split("@")[0].capitalize()
+
+    conn.execute("""
+        INSERT INTO user_logins (
+            id, user_id, email, full_name, product, device_hostname,
+            ip_address, auth_method, login_time, status, alert_dispatched, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+    """, (
+        login_id, user_id, email.lower(), full_name, product,
+        device_hostname or "Desktop", ip_address or "127.0.0.1",
+        auth_method, now_iso, status, now_iso
+    ))
+
+    if user_id:
+        conn.execute("UPDATE users SET last_seen = ?, updated_at = ? WHERE id = ?", (now_iso, now_iso, user_id))
+        conn.execute("""
+            INSERT INTO user_presence_logs (user_id, account_id, event_type, connection_mode, source_app, device_hostname, ip_address, created_at)
+            VALUES (?, ?, 'login', 'online', ?, ?, ?, ?)
+        """, (user_id, user_id, product, device_hostname or "Desktop", ip_address or "127.0.0.1", now_iso))
+
+    conn.commit()
+
+    # Mirror to MongoDB cloud if configured
+    try:
+        from mongo_db import get_mongo_db
+        db = get_mongo_db()
+        if db is not None:
+            doc = {
+                "_id": login_id,
+                "id": login_id,
+                "user_id": user_id,
+                "email": email.lower(),
+                "full_name": full_name,
+                "product": product,
+                "device_hostname": device_hostname or "Desktop",
+                "ip_address": ip_address or "127.0.0.1",
+                "auth_method": auth_method,
+                "login_time": now_iso,
+                "status": status,
+                "alert_dispatched": 1,
+                "created_at": now_iso
+            }
+            db["user_logins"].replace_one({"_id": login_id}, doc, upsert=True)
+            if user_id:
+                db["users"].update_one({"_id": user_id}, {"$set": {"last_seen": now_iso, "updated_at": now_iso}})
+    except Exception as me:
+        print(f"[MongoLogins] Note: {me}")
+
+    record = {
+        "id": login_id,
+        "user_id": user_id,
+        "email": email.lower(),
+        "full_name": full_name,
+        "product": product,
+        "device_hostname": device_hostname or "Desktop",
+        "ip_address": ip_address or "127.0.0.1",
+        "auth_method": auth_method,
+        "login_time": now_iso,
+        "status": status,
+        "alert_dispatched": True
+    }
+
+    if should_close:
+        conn.close()
+
+    return record
+
+def get_recent_logins(limit: int = 30, conn: Optional[sqlite3.Connection] = None) -> List[Dict[str, Any]]:
+    should_close = False
+    if conn is None:
+        conn = get_db_connection()
+        should_close = True
+
+    try:
+        from mongo_db import get_mongo_db
+        db = get_mongo_db()
+        if db is not None:
+            cursor_m = db["user_logins"].find({}).sort("login_time", -1).limit(limit)
+            docs = list(cursor_m)
+            if docs:
+                res = []
+                for d in docs:
+                    d_copy = dict(d)
+                    d_copy.pop("_id", None)
+                    res.append(d_copy)
+                if should_close:
+                    conn.close()
+                return res
+    except Exception:
+        pass
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM user_logins
+        ORDER BY login_time DESC
+        LIMIT ?
+    """, (limit,))
+    rows = cursor.fetchall()
+    results = [dict(r) for r in rows]
+
+    if should_close:
+        conn.close()
+
+    return results
+
+def get_user_logins(user_id_or_email: str, limit: int = 20, conn: Optional[sqlite3.Connection] = None) -> List[Dict[str, Any]]:
+    should_close = False
+    if conn is None:
+        conn = get_db_connection()
+        should_close = True
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM user_logins
+        WHERE user_id = ? OR LOWER(email) = ?
+        ORDER BY login_time DESC
+        LIMIT ?
+    """, (user_id_or_email, user_id_or_email.lower(), limit))
+    rows = cursor.fetchall()
+    results = [dict(r) for r in rows]
+
+    if should_close:
+        conn.close()
+
+    return results

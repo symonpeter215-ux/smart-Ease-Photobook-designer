@@ -349,6 +349,35 @@
             </table>
           </div>
         </div>
+      
+        <!-- Live Login Activity Feed -->
+        <div class="card" id="cardRecentLogins" style="margin-top:20px;">
+          <div class="card-header flex-between">
+            <div>
+              <h2 class="card-title">🔐 Live Login Activity <span class="badge badge-online" id="loginLiveBadge" style="margin-left:8px;"><span class="pulse-dot"></span> Live</span></h2>
+              <p class="card-subtitle">Every sign-in to Photobook Designer &amp; Ease Select, in real time. The user is notified by email on every sign-in.</p>
+            </div>
+            <span class="text-muted" id="loginCountLabel" style="font-size:0.8rem;">-</span>
+          </div>
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Time (UTC)</th>
+                  <th>Customer</th>
+                  <th>Email</th>
+                  <th>App</th>
+                  <th>Device</th>
+                  <th>Method</th>
+                  <th>User Alerted</th>
+                </tr>
+              </thead>
+              <tbody id="recentLoginsBody">
+                <tr><td colspan="7" class="text-center text-muted">Loading login activity...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </section>
 
       <!-- ============================================== -->

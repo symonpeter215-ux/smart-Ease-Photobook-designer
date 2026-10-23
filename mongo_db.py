@@ -79,7 +79,7 @@ def sync_sqlite_to_mongo(conn: sqlite3.Connection):
     if db is None or ReplaceOne is None:
         return
     try:
-        tables = ["packages", "users", "subscriptions", "transactions"]
+        tables = ["packages", "users", "subscriptions", "transactions", "user_logins"]
         for table in tables:
             cursor = conn.cursor()
             cursor.execute(f"SELECT * FROM {table}")
@@ -116,7 +116,7 @@ def sync_mongo_to_sqlite(conn: sqlite3.Connection):
             sync_sqlite_to_mongo(conn)
             return
 
-        tables = ["packages", "users", "subscriptions", "transactions"]
+        tables = ["packages", "users", "subscriptions", "transactions", "user_logins"]
         for table in tables:
             docs = list(db[table].find({}))
             if not docs:

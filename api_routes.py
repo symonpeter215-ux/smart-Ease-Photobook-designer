@@ -1996,6 +1996,34 @@ async def login_auth_user(payload: Dict[str, Any] = Body(...)):
         pass
 
     sub_info = get_user_subscription_info(user_id, email, conn)
+
+    # Record login and dispatch security alert
+    try:
+        from database import record_user_login
+        from email_service import dispatch_login_security_email
+        fn_val = user_record.get("full_name") or user_record.get("name") or email.split("@")[0].capitalize()
+        dev_val = payload.get("deviceHostname") or payload.get("device_hostname") or "Desktop"
+        prod_val = payload.get("product") or "Smart Ease Photobook Designer"
+        l_rec = record_user_login(
+            email=email,
+            full_name=fn_val,
+            product=prod_val,
+            device_hostname=dev_val,
+            auth_method="email",
+            user_id=user_id,
+            conn=conn
+        )
+        dispatch_login_security_email(
+            email=email,
+            full_name=fn_val,
+            product=prod_val,
+            device_hostname=dev_val,
+            auth_method="Email & Password",
+            login_time=l_rec.get("login_time")
+        )
+    except Exception as log_e:
+        print(f"[LoginSecurity] Log error: {log_e}")
+
     conn.close()
 
     return {
@@ -2123,6 +2151,33 @@ async def google_auth_user(payload: Dict[str, Any] = Body(...)):
                 print(f"[MongoDB] Error creating Google user: {me}")
 
     sub_info = get_user_subscription_info(user_id, email, conn)
+
+    # Record Google login and dispatch security alert
+    try:
+        from database import record_user_login
+        from email_service import dispatch_login_security_email
+        dev_val = payload.get("deviceHostname") or payload.get("device_hostname") or "Desktop"
+        prod_val = source_app or "Smart Ease Photobook Designer"
+        l_rec = record_user_login(
+            email=email,
+            full_name=name,
+            product=prod_val,
+            device_hostname=dev_val,
+            auth_method="google",
+            user_id=user_id,
+            conn=conn
+        )
+        dispatch_login_security_email(
+            email=email,
+            full_name=name,
+            product=prod_val,
+            device_hostname=dev_val,
+            auth_method="Google Sign-In",
+            login_time=l_rec.get("login_time")
+        )
+    except Exception as log_e:
+        print(f"[GoogleLoginSecurity] Log error: {log_e}")
+
     conn.close()
 
     return {
@@ -2139,4 +2194,81 @@ async def google_auth_user(payload: Dict[str, Any] = Body(...)):
             "packageName": sub_info["packageName"],
             "lifetimePro": sub_info["lifetimePro"]
         }
+    }
+
+
+# ==========================================
+# 10. REAL-TIME LOGIN AUDIT & NOTIFICATION ENDPOINTS
+# ==========================================
+
+@router.post("/logins/record")
+async def api_record_login(payload: Dict[str, Any] = Body(...)):
+    """
+    Records a user login from client desktop apps or web and dispatches a real-time security alert.
+    """
+    from database import record_user_login
+    from email_service import dispatch_login_security_email
+
+    email = (payload.get("email") or "").strip().lower()
+    full_name = payload.get("fullName") or payload.get("full_name") or payload.get("name")
+    product = payload.get("product") or "Smart Ease Photobook Designer"
+    device = payload.get("deviceHostname") or payload.get("device_hostname") or "Desktop"
+    auth_method = payload.get("authMethod") or payload.get("auth_method") or "email"
+    ip = payload.get("ipAddress") or payload.get("ip_address") or "127.0.0.1"
+    user_id = payload.get("userId") or payload.get("user_id")
+
+    if not email:
+        raise HTTPException(status_code=400, detail="User email is required.")
+
+    login_record = record_user_login(
+        email=email,
+        full_name=full_name,
+        product=product,
+        device_hostname=device,
+        auth_method=auth_method,
+        ip_address=ip,
+        user_id=user_id
+    )
+
+    alert_res = dispatch_login_security_email(
+        email=email,
+        full_name=login_record.get("full_name"),
+        product=product,
+        device_hostname=device,
+        auth_method=auth_method,
+        login_time=login_record.get("login_time")
+    )
+
+    return {
+        "success": True,
+        "login": login_record,
+        "security_alert": alert_res,
+        "message": f"Login verified and real-time security alert dispatched for {email}."
+    }
+
+@router.get("/logins/recent")
+async def api_get_recent_logins(limit: int = Query(default=30)):
+    """
+    Returns the real-time stream of latest logins for Subscription Manager.
+    """
+    from database import get_recent_logins
+    logins = get_recent_logins(limit=limit)
+    return {
+        "success": True,
+        "count": len(logins),
+        "logins": logins
+    }
+
+@router.get("/users/{user_id}/logins")
+async def api_get_user_logins(user_id: str, limit: int = Query(default=20)):
+    """
+    Returns the login history for a specific customer.
+    """
+    from database import get_user_logins
+    logins = get_user_logins(user_id, limit=limit)
+    return {
+        "success": True,
+        "user_id": user_id,
+        "count": len(logins),
+        "logins": logins
     }
