@@ -46,14 +46,14 @@ PLAN_OPTIONS = {
     "pkg_photobook": [(5, 12.00), (6, 14.70), (12, 29.40)],
     "pkg_ease_select": [(5, 12.00), (6, 14.70), (12, 29.40)],
 }
-PLAN_SORT_ORDER = {"pkg_bundle": 0, "pkg_photobook": 1, "pkg_ease_select": 2, "pkg_lifetime": 3}
+PLAN_SORT_ORDER = {"pkg_bundle": 0, "pkg_photobook": 1, "pkg_ease_select": 2}
 DAYS_PER_MONTH = 30
 CARD_MIN_USD = float(os.environ.get("LIVEPAY_CARD_MIN_USD") or 10)
 
 
 def plan_options(pkg: Dict[str, Any]) -> List[Dict[str, Any]]:
-    if pkg.get("billing_interval") == "lifetime" or pkg.get("billing_type") == "one_time":
-        return [{"months": None, "price": fmt_money(pkg["price"]), "label": "Lifetime"}]
+    """Choices customers can pay for. Packages without options (e.g. Lifetime) aren't sold;
+    admins can still grant them from the console, and existing holders keep their access."""
     return [{"months": m, "price": p, "label": f"{m} months"} for m, p in PLAN_OPTIONS.get(pkg["id"], [])]
 
 # Helper to format currency
@@ -736,6 +736,7 @@ async def get_packages(authorization: Optional[str] = Header(default=None)):
     for pkg in packages:
         pkg_id = pkg["id"]
         pkg["options"] = plan_options(pkg)
+        pkg["for_sale"] = bool(pkg["options"]) and bool(pkg.get("is_active", 1))
         pkg["sort_order"] = PLAN_SORT_ORDER.get(pkg_id, 99)
         if not is_admin:
             continue
@@ -1459,21 +1460,20 @@ async def card_checkout(payload: Dict[str, Any] = Body(...), user: Dict[str, Any
     try:
         pkg = _get_active_package(cursor, payload.get("package_id") or payload.get("packageId") or "")
         options = plan_options(pkg)
-        if options and options[0]["months"] is None:
-            option = options[0]  # lifetime
-        else:
-            try:
-                months = int(payload.get("months") or 0)
-            except (TypeError, ValueError):
-                months = 0
-            option = next((o for o in options if o["months"] == months), None)
-            if not option:
-                choices = ", ".join(str(o["months"]) for o in options) or "none"
-                raise HTTPException(status_code=400, detail=f"Please choose how many months to pay for ({choices}).")
+        if not options:
+            raise HTTPException(status_code=400, detail="This plan is not available for purchase.")
+        try:
+            months = int(payload.get("months") or 0)
+        except (TypeError, ValueError):
+            months = 0
+        option = next((o for o in options if o["months"] == months), None)
+        if not option:
+            choices = ", ".join(str(o["months"]) for o in options)
+            raise HTTPException(status_code=400, detail=f"Please choose how many months to pay for ({choices}).")
         amount = fmt_money(option["price"])
         if amount < CARD_MIN_USD:
             raise HTTPException(status_code=400, detail=f"Card payments must be at least USD {CARD_MIN_USD:.2f}.")
-        access_days = None if option["months"] is None else option["months"] * DAYS_PER_MONTH
+        access_days = option["months"] * DAYS_PER_MONTH
         email = user.get("email") or ""
         if not email:
             raise HTTPException(status_code=400, detail="Your account needs an email address before paying.")
