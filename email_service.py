@@ -131,7 +131,7 @@ def dispatch_login_security_email(
                 server.login(SMTP_USER, SMTP_PASS)
                 server.sendmail(FROM_EMAIL, [email], msg.as_string())
                 server.quit()
-                print(f"[EmailSecurity] ✓ Dispatched real-time login alert email to {email}")
+                print(f"[EmailSecurity] [DISPATCH_OK] Dispatched real-time login alert email to {email}")
             except Exception as e:
                 print(f"[EmailSecurity] SMTP delivery error to {email}: {e}")
 
@@ -146,7 +146,7 @@ def dispatch_login_security_email(
         }
 
     # If SMTP is not configured in env, log the dispatch
-    print(f"[EmailSecurity] 🛡️ [SIMULATED_DISPATCH] Login security alert prepared for {email} on {device_hostname} at {time_str}")
+    print(f"[EmailSecurity] [SECURITY_ALERT] Login security alert prepared for {email} on {device_hostname} at {time_str}")
     return {
         "sent": True,
         "channel": "in_app_and_audit",

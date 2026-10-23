@@ -923,6 +923,30 @@ def get_presence_metrics(conn: Optional[sqlite3.Connection] = None) -> Dict[str,
 # 7. USER LOGINS & SECURITY ACTIVITY LOGGING
 # ==========================================
 
+def ensure_user_logins_table(conn: sqlite3.Connection):
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_logins (
+                id TEXT PRIMARY KEY,
+                user_id TEXT,
+                email TEXT NOT NULL,
+                full_name TEXT,
+                product TEXT NOT NULL DEFAULT 'Smart Ease Photobook Designer',
+                device_hostname TEXT,
+                ip_address TEXT,
+                auth_method TEXT NOT NULL DEFAULT 'email',
+                login_time TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'SUCCESS',
+                alert_dispatched INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            );
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_logins_email ON user_logins(email);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_logins_time ON user_logins(login_time);")
+    except Exception:
+        pass
+
+
 def record_user_login(
     email: str,
     full_name: Optional[str] = None,
@@ -939,6 +963,8 @@ def record_user_login(
     if conn is None:
         conn = get_db_connection()
         should_close = True
+
+    ensure_user_logins_table(conn)
 
     login_id = f"LGN-{uuid.uuid4().hex[:8].upper()}"
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -967,11 +993,16 @@ def record_user_login(
     ))
 
     if user_id:
-        conn.execute("UPDATE users SET last_seen = ?, updated_at = ? WHERE id = ?", (now_iso, now_iso, user_id))
-        conn.execute("""
-            INSERT INTO user_presence_logs (user_id, account_id, event_type, connection_mode, source_app, device_hostname, ip_address, created_at)
-            VALUES (?, ?, 'login', 'online', ?, ?, ?, ?)
-        """, (user_id, user_id, product, device_hostname or "Desktop", ip_address or "127.0.0.1", now_iso))
+        try:
+            cursor.execute("SELECT id FROM users WHERE id = ?", (user_id,))
+            if cursor.fetchone():
+                conn.execute("UPDATE users SET last_seen = ?, updated_at = ? WHERE id = ?", (now_iso, now_iso, user_id))
+                conn.execute("""
+                    INSERT INTO user_presence_logs (user_id, account_id, event_type, connection_mode, source_app, device_hostname, ip_address, created_at)
+                    VALUES (?, ?, 'login', 'online', ?, ?, ?, ?)
+                """, (user_id, user_id, product, device_hostname or "Desktop", ip_address or "127.0.0.1", now_iso))
+        except Exception as pe:
+            print(f"[database] Note on presence log update: {pe}")
 
     conn.commit()
 
