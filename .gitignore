@@ -24,3 +24,7 @@ desktop.ini
 # Secrets
 .env
 .env.local
+
+# Live data lives in MongoDB; never deploy a local database file
+data/*.db
+

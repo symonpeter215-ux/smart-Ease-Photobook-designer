@@ -182,6 +182,8 @@ def init_db():
     # customers and revenue in the admin console.)
     # Sync from MongoDB cloud if MONGODB_URI is provided
     sync_mongo_to_sqlite(conn)
+    # Remove the old demo customers (and anything attached to them) everywhere
+    purge_demo_data(conn)
     # Auto-recalculate subscription statuses
     recalculate_all_subscription_statuses(conn)
     # Ensure MongoDB cloud has all latest records
@@ -254,6 +256,44 @@ def seed_initial_packages(conn: sqlite3.Connection):
                     product_access, description, is_active, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, packages)
+
+# The 8 sample customers that seed_initial_data used to create (Rafia Pictures, Sarah Jenkins, ...).
+DEMO_USER_IDS = [f"USR-1000{i}" for i in range(1, 9)]
+
+
+def purge_demo_data(conn: sqlite3.Connection):
+    """Deletes the demo customers and their subscriptions, payments and login records from
+    SQLite and MongoDB. Safe to run on every start-up; does nothing once they're gone."""
+    marks = ",".join("?" * len(DEMO_USER_IDS))
+    cursor = conn.cursor()
+    sub_ids = [r["id"] for r in cursor.execute(f"SELECT id FROM subscriptions WHERE user_id IN ({marks})", DEMO_USER_IDS)]
+    txn_ids = [r["id"] for r in cursor.execute(f"SELECT id FROM transactions WHERE user_id IN ({marks})", DEMO_USER_IDS)]
+    login_ids = [r["id"] for r in cursor.execute(f"SELECT id FROM user_logins WHERE user_id IN ({marks})", DEMO_USER_IDS)]
+    users_found = cursor.execute(f"SELECT COUNT(*) AS n FROM users WHERE id IN ({marks})", DEMO_USER_IDS).fetchone()["n"]
+
+    with conn:
+        conn.execute(f"DELETE FROM transactions WHERE user_id IN ({marks})", DEMO_USER_IDS)
+        conn.execute(f"DELETE FROM subscriptions WHERE user_id IN ({marks})", DEMO_USER_IDS)
+        conn.execute(f"DELETE FROM user_logins WHERE user_id IN ({marks})", DEMO_USER_IDS)
+        conn.execute(f"DELETE FROM user_presence_logs WHERE user_id IN ({marks})", DEMO_USER_IDS)
+        conn.execute(f"DELETE FROM users WHERE id IN ({marks})", DEMO_USER_IDS)
+
+    removed = {"users": 0, "subscriptions": 0, "transactions": 0, "user_logins": 0}
+    try:
+        from mongo_db import get_mongo_db
+        db = get_mongo_db()
+        if db is not None:
+            removed["transactions"] = db["transactions"].delete_many({"$or": [{"user_id": {"$in": DEMO_USER_IDS}}, {"_id": {"$in": txn_ids}}]}).deleted_count
+            removed["subscriptions"] = db["subscriptions"].delete_many({"$or": [{"user_id": {"$in": DEMO_USER_IDS}}, {"_id": {"$in": sub_ids}}]}).deleted_count
+            removed["user_logins"] = db["user_logins"].delete_many({"$or": [{"user_id": {"$in": DEMO_USER_IDS}}, {"_id": {"$in": login_ids}}]}).deleted_count
+            removed["users"] = db["users"].delete_many({"_id": {"$in": DEMO_USER_IDS}}).deleted_count
+    except Exception as e:
+        print(f"[DemoPurge] MongoDB cleanup error: {e}")
+
+    if users_found or any(removed.values()):
+        print(f"[DemoPurge] Removed demo data. SQLite: {users_found} users, {len(sub_ids)} subscriptions, "
+              f"{len(txn_ids)} transactions. MongoDB: {removed}")
+
 
 def seed_initial_data(conn: sqlite3.Connection):
     cursor = conn.cursor()
