@@ -1943,6 +1943,66 @@ async def google_auth_config():
     return {"enabled": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET), "clientId": GOOGLE_CLIENT_ID}
 
 
+# ---------- Google sign-in for the web admin console ----------
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://smart-ease-photobook-designer.onrender.com").rstrip("/")
+ADMIN_GOOGLE_REDIRECT = f"{PUBLIC_BASE_URL}/api/v1/auth/google/callback"
+_admin_google_states: Dict[str, Dict[str, Any]] = {}
+
+
+@router.get("/auth/google/admin-start")
+async def google_admin_start():
+    """Sends the admin's browser to Google; Google returns to /auth/google/callback."""
+    import base64, hashlib, secrets, time, urllib.parse
+    from fastapi.responses import RedirectResponse
+    if not (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET):
+        raise HTTPException(status_code=503, detail="Google sign-in is not set up on the server yet.")
+    now = time.time()
+    for s in [s for s, v in _admin_google_states.items() if now - v["created"] > 600]:
+        _admin_google_states.pop(s, None)
+    verifier = secrets.token_urlsafe(48)
+    state = secrets.token_urlsafe(16)
+    _admin_google_states[state] = {"verifier": verifier, "created": now}
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    params = {
+        "client_id": GOOGLE_CLIENT_ID, "redirect_uri": ADMIN_GOOGLE_REDIRECT, "response_type": "code",
+        "scope": "openid email profile", "code_challenge": challenge, "code_challenge_method": "S256",
+        "state": state, "prompt": "select_account",
+    }
+    return RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params))
+
+
+@router.get("/auth/google/callback")
+async def google_admin_callback(code: str = Query(default=""), state: str = Query(default=""), error: str = Query(default="")):
+    """Finishes admin Google sign-in and hands the session token to the console (URL fragment)."""
+    import urllib.parse
+    from fastapi.responses import RedirectResponse
+    console = f"{PUBLIC_BASE_URL}/static/index.html"
+    fail = lambda msg: RedirectResponse(f"{console}#admin_error={urllib.parse.quote(msg)}")
+    pending = _admin_google_states.pop(state, None)
+    if error or not code:
+        return fail("Google sign-in was cancelled.")
+    if not pending:
+        return fail("This sign-in link expired. Please try again.")
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post("https://oauth2.googleapis.com/token", data={
+            "code": code, "client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": ADMIN_GOOGLE_REDIRECT, "grant_type": "authorization_code",
+            "code_verifier": pending["verifier"],
+        })
+    if resp.status_code != 200 or not resp.json().get("id_token"):
+        print(f"[GoogleAuth] admin token exchange failed: {resp.status_code} {resp.text[:300]}")
+        return fail("Google sign-in failed. Please try again.")
+    try:
+        result = await google_auth_user({"idToken": resp.json()["id_token"], "sourceApp": "Admin Console"})
+    except HTTPException as e:
+        return fail(str(e.detail))
+    from security import ADMIN_EMAILS
+    if (result.get("user", {}).get("email") or "").lower() not in ADMIN_EMAILS:
+        delete_session(result["token"])
+        return fail("This Google account is not an administrator.")
+    return RedirectResponse(f"{console}#admin_token={urllib.parse.quote(result['token'])}")
+
+
 @router.post("/auth/google/exchange")
 async def google_auth_exchange(payload: Dict[str, Any] = Body(...)):
     """

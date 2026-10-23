@@ -18,6 +18,16 @@ function getAdminToken() {
   try { return localStorage.getItem(ADMIN_TOKEN_KEY); } catch (_) { return null; }
 }
 
+// Returning from "Continue with Google": the server puts the session token (or an error) in the URL fragment.
+let _googleAdminError = '';
+(function takeGoogleAdminResult() {
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const token = params.get('admin_token');
+  _googleAdminError = params.get('admin_error') || '';
+  if (token) { try { localStorage.setItem(ADMIN_TOKEN_KEY, token); } catch (_) {} }
+  if (token || _googleAdminError) history.replaceState(null, '', window.location.pathname + window.location.search);
+})();
+
 // All /api/ calls go to the server with the admin's session token; 401/403 opens the sign-in form.
 window.fetch = async function(url, options = {}) {
   if (typeof url !== 'string' || !url.startsWith('/api/')) {
@@ -29,7 +39,7 @@ window.fetch = async function(url, options = {}) {
   }
   const res = await _nativeFetch(API_BASE + url, options);
   if (res.status === 401 || res.status === 403) {
-    showAdminLogin(res.status === 403 ? 'This account is not an administrator.' : '');
+    showAdminLogin(_googleAdminError || (res.status === 403 ? 'This account is not an administrator.' : ''));
   }
   return res;
 };
@@ -43,6 +53,11 @@ function showAdminLogin(message) {
     <form id="adminLoginForm" style="background:#0f172a;border:1px solid #334155;border-radius:12px;padding:24px;width:100%;max-width:360px;color:#e2e8f0;font-family:inherit;display:flex;flex-direction:column;gap:12px;">
       <h2 style="margin:0;font-size:18px;">Admin sign in</h2>
       <p style="margin:0;font-size:13px;color:#94a3b8;">Sign in with your Smart Ease administrator account.</p>
+      <a href="${API_BASE}/api/v1/auth/google/admin-start" style="display:flex;align-items:center;justify-content:center;gap:10px;padding:10px;border-radius:8px;background:#fff;color:#1f1f1f;font-weight:700;text-decoration:none;">
+        <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.4 30.2 0 24 0 14.6 0 6.6 5.4 2.7 13.3l7.8 6C12.4 13.6 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.5 5.8c4.4-4.1 7.1-10.1 7.1-17.5z"/><path fill="#FBBC05" d="M10.5 28.7c-.5-1.4-.8-3-.8-4.7s.3-3.3.8-4.7l-7.8-6C1 16.6 0 20.2 0 24s1 7.4 2.7 10.7l7.8-6z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.5-5.8c-2.1 1.4-4.9 2.3-8.4 2.3-6.3 0-11.6-4.1-13.5-9.8l-7.8 6C6.6 42.6 14.6 48 24 48z"/></svg>
+        Continue with Google
+      </a>
+      <p style="margin:0;font-size:12px;color:#64748b;text-align:center;">or use email and password</p>
       <input id="adminLoginEmail" type="email" placeholder="Email" autocomplete="username" required style="padding:10px;border-radius:8px;border:1px solid #334155;background:#020617;color:#fff;">
       <input id="adminLoginPassword" type="password" placeholder="Password" autocomplete="current-password" required style="padding:10px;border-radius:8px;border:1px solid #334155;background:#020617;color:#fff;">
       <div id="adminLoginError" style="font-size:13px;color:#fca5a5;${message ? '' : 'display:none;'}">${message || ''}</div>
