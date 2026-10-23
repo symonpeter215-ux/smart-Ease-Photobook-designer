@@ -8,12 +8,77 @@ const PROD_API_BASE = 'https://smart-ease-photobook-designer.onrender.com';
 const API_BASE = window.location.hostname.includes('onrender.com') ? '' : PROD_API_BASE;
 
 const _nativeFetch = window.fetch;
-window.fetch = function(url, options) {
-  if (typeof url === 'string' && url.startsWith('/api/')) {
-    url = API_BASE + url;
+const ADMIN_TOKEN_KEY = 'se_admin_token';
+
+function getAdminToken() {
+  try { return localStorage.getItem(ADMIN_TOKEN_KEY); } catch (_) { return null; }
+}
+
+// All /api/ calls go to the server with the admin's session token; 401/403 opens the sign-in form.
+window.fetch = async function(url, options = {}) {
+  if (typeof url !== 'string' || !url.startsWith('/api/')) {
+    return _nativeFetch(url, options);
   }
-  return _nativeFetch(url, options);
+  const token = getAdminToken();
+  if (token) {
+    options = { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${token}` } };
+  }
+  const res = await _nativeFetch(API_BASE + url, options);
+  if (res.status === 401 || res.status === 403) {
+    showAdminLogin(res.status === 403 ? 'This account is not an administrator.' : '');
+  }
+  return res;
 };
+
+function showAdminLogin(message) {
+  if (document.getElementById('adminLoginOverlay')) return;
+  const overlay = document.createElement('div');
+  overlay.id = 'adminLoginOverlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,0.92);display:flex;align-items:center;justify-content:center;padding:16px;';
+  overlay.innerHTML = `
+    <form id="adminLoginForm" style="background:#0f172a;border:1px solid #334155;border-radius:12px;padding:24px;width:100%;max-width:360px;color:#e2e8f0;font-family:inherit;display:flex;flex-direction:column;gap:12px;">
+      <h2 style="margin:0;font-size:18px;">Admin sign in</h2>
+      <p style="margin:0;font-size:13px;color:#94a3b8;">Sign in with your Smart Ease administrator account.</p>
+      <input id="adminLoginEmail" type="email" placeholder="Email" autocomplete="username" required style="padding:10px;border-radius:8px;border:1px solid #334155;background:#020617;color:#fff;">
+      <input id="adminLoginPassword" type="password" placeholder="Password" autocomplete="current-password" required style="padding:10px;border-radius:8px;border:1px solid #334155;background:#020617;color:#fff;">
+      <div id="adminLoginError" style="font-size:13px;color:#fca5a5;${message ? '' : 'display:none;'}">${message || ''}</div>
+      <button type="submit" style="padding:10px;border:none;border-radius:8px;background:#0284c7;color:#fff;font-weight:700;cursor:pointer;">Sign in</button>
+    </form>`;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#adminLoginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const errBox = overlay.querySelector('#adminLoginError');
+    errBox.style.display = 'none';
+    try {
+      const res = await _nativeFetch(API_BASE + '/api/v1/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: overlay.querySelector('#adminLoginEmail').value.trim(),
+          password: overlay.querySelector('#adminLoginPassword').value,
+          product: 'Subscription Manager Admin'
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success || !data.token) {
+        throw new Error(data.error || data.detail || 'Sign in failed.');
+      }
+      try { localStorage.setItem(ADMIN_TOKEN_KEY, data.token); } catch (_) {}
+      window.location.reload();
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.style.display = 'block';
+    }
+  });
+}
+
+async function adminSignOut() {
+  try { await fetch('/api/v1/auth/logout', { method: 'POST' }); } catch (_) {}
+  try { localStorage.removeItem(ADMIN_TOKEN_KEY); } catch (_) {}
+  window.location.reload();
+}
+window.adminSignOut = adminSignOut;
 
 // Application State
 const state = {
@@ -1275,8 +1340,10 @@ function initModals() {
     e.preventDefault();
     const userId = document.getElementById('payUserSelect').value;
     const packageId = document.getElementById('payPackageSelect').value;
-    const amount = parseFloat(document.getElementById('payAmountInput').value);
     const provider = document.getElementById('payProviderSelect').value;
+    const amount = provider === 'Admin Grant' ? 0 : (parseFloat(document.getElementById('payAmountInput').value) || 0);
+    const daysRaw = document.getElementById('payDaysInput')?.value.trim();
+    const days = daysRaw ? parseInt(daysRaw, 10) : null;
     const ref = document.getElementById('payRefInput').value || `PAY-${Date.now().toString().slice(-6)}`;
 
     if (!userId) {
@@ -1292,6 +1359,7 @@ function initModals() {
           user_id: userId,
           package_id: packageId,
           amount: amount,
+          days: days,
           payment_provider: provider,
           transaction_reference: ref
         })
@@ -1300,7 +1368,7 @@ function initModals() {
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.detail || 'Failed to record subscription payment');
       }
-      showToast('Payment verified and subscription activated!', 'success');
+      showToast(days ? `Access turned on for ${days} days.` : 'Access turned on.', 'success');
       document.getElementById('modalRecordPayment').classList.remove('open');
       document.getElementById('formRecordPayment').reset();
       loadDashboardData();

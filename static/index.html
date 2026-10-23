@@ -925,18 +925,20 @@
           </select>
         </div>
         <div class="form-group">
-          <label>Amount Paid (USD):</label>
-          <input type="number" step="0.01" id="payAmountInput" class="text-input w-100" value="2.45" required>
+          <label>Access Type:</label>
+          <select id="payProviderSelect" class="select-control w-100">
+            <option value="Admin Grant">Free access (admin grant)</option>
+            <option value="Manual">Payment received (bank / cash)</option>
+            <option value="LivePay Card">Payment received (LivePay card)</option>
+          </select>
         </div>
         <div class="form-group">
-          <label>Payment Provider:</label>
-          <select id="payProviderSelect" class="select-control w-100">
-            <option value="Stripe">Stripe</option>
-            <option value="PayPal">PayPal</option>
-            <option value="Flutterwave">Flutterwave</option>
-            <option value="Pesapal">Pesapal</option>
-            <option value="Manual">Manual / Bank / Cash</option>
-          </select>
+          <label>Days of Access:</label>
+          <input type="number" min="1" max="3650" step="1" id="payDaysInput" class="text-input w-100" value="30" placeholder="Leave empty only for Lifetime packages">
+        </div>
+        <div class="form-group">
+          <label>Amount Paid (USD):</label>
+          <input type="number" step="0.01" min="0" id="payAmountInput" class="text-input w-100" value="0">
         </div>
         <div class="form-group">
           <label>Transaction Reference:</label>

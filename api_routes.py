@@ -15,7 +15,8 @@ import io
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional
-from fastapi import APIRouter, HTTPException, Query, Body, Response
+import httpx
+from fastapi import APIRouter, HTTPException, Query, Body, Response, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from database import (
@@ -27,8 +28,15 @@ from app_identity import (
     ping_photobook_server, push_license_to_photobook,
     ping_render_server, sync_render_cloud_data
 )
+from security import (
+    require_user, require_admin, create_session, delete_session,
+    verify_livepay_signature, livepay_create_card_checkout, livepay_transaction_status,
+)
 
 router = APIRouter(prefix="/api/v1")
+
+# Every admin-console endpoint takes this dependency; customer endpoints use require_user.
+ADMIN = [Depends(require_admin)]
 
 # Helper to format currency
 def fmt_money(val: float) -> float:
@@ -38,7 +46,7 @@ def fmt_money(val: float) -> float:
 # 1. MAIN DASHBOARD ENDPOINTS
 # ==========================================
 
-@router.get("/dashboard/metrics")
+@router.get("/dashboard/metrics", dependencies=ADMIN)
 async def get_dashboard_metrics():
     recalculate_all_subscription_statuses()
     conn = get_db_connection()
@@ -222,7 +230,7 @@ async def get_dashboard_metrics():
         "recent_transactions": recent_txns
     }
 
-@router.get("/dashboard/chart")
+@router.get("/dashboard/chart", dependencies=ADMIN)
 async def get_dashboard_chart(year: int = Query(default=None), month: int = Query(default=None)):
     now = datetime.now(timezone.utc)
     if year is None:
@@ -304,7 +312,7 @@ async def get_dashboard_chart(year: int = Query(default=None), month: int = Quer
 # 2. USER MANAGEMENT ENDPOINTS
 # ==========================================
 
-@router.get("/users")
+@router.get("/users", dependencies=ADMIN)
 async def get_users(
     search: Optional[str] = Query(default=None),
     product: Optional[str] = Query(default="all"),
@@ -556,7 +564,7 @@ async def get_users(
 
     return results
 
-@router.get("/users/{user_id}")
+@router.get("/users/{user_id}", dependencies=ADMIN)
 async def get_user_detail(user_id: str):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -649,7 +657,7 @@ async def get_user_detail(user_id: str):
         "presence_logs": presence_logs
     }
 
-@router.post("/users")
+@router.post("/users", dependencies=ADMIN)
 async def create_user(payload: Dict[str, Any] = Body(...)):
     full_name = (payload.get("full_name") or "").strip()
     email = (payload.get("email") or "").strip()
@@ -721,7 +729,7 @@ async def get_packages():
     conn.close()
     return packages
 
-@router.put("/packages/{package_id}")
+@router.put("/packages/{package_id}", dependencies=ADMIN)
 async def update_package(package_id: str, payload: Dict[str, Any] = Body(...)):
     new_price = payload.get("price")
     new_name = payload.get("name")
@@ -749,7 +757,7 @@ async def update_package(package_id: str, payload: Dict[str, Any] = Body(...)):
 # 4. SUBSCRIPTION TRACKING ENDPOINTS
 # ==========================================
 
-@router.get("/subscriptions")
+@router.get("/subscriptions", dependencies=ADMIN)
 async def get_subscriptions(
     status_filter: Optional[str] = Query(default=None),
     access_type_filter: Optional[str] = Query(default=None)
@@ -824,89 +832,73 @@ async def get_subscriptions(
 
     return subs
 
-@router.post("/subscriptions")
+@router.post("/subscriptions", dependencies=ADMIN)
 async def create_or_extend_subscription(payload: Dict[str, Any] = Body(...)):
+    """
+    Admin console: turn a customer's access on.
+    - payment_provider "Admin Grant": free access for `days` days (not counted as revenue).
+    - any other provider: records a payment the admin received outside LivePay.
+    `days` sets how long access lasts; omit it only for lifetime packages.
+    """
     user_id = payload.get("user_id")
     package_id = payload.get("package_id")
-
     if not user_id or not package_id:
         raise HTTPException(status_code=400, detail="user_id and package_id are required")
 
+    provider = (payload.get("payment_provider") or "Admin Grant").strip()
+    is_grant = provider.lower() == "admin grant"
+    days_raw = payload.get("days")
+    days = None
+    if days_raw not in (None, ""):
+        try:
+            days = int(days_raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="days must be a whole number")
+        if days < 1 or days > 3650:
+            raise HTTPException(status_code=400, detail="days must be between 1 and 3650")
+
     conn = get_db_connection()
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM users WHERE id = ?", (user_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Customer not found")
+        cursor.execute("SELECT * FROM packages WHERE id = ?", (package_id,))
+        pkg = cursor.fetchone()
+        if not pkg:
+            raise HTTPException(status_code=404, detail="Package not found")
+        pkg = dict(pkg)
+        is_lifetime = pkg["billing_type"] == "one_time" or pkg["billing_interval"] == "lifetime"
+        if days is None and not is_lifetime:
+            raise HTTPException(status_code=400, detail="Please enter how many days of access to give.")
 
-    cursor.execute("SELECT * FROM packages WHERE id = ?", (package_id,))
-    pkg = cursor.fetchone()
-    if not pkg:
+        now_dt = datetime.now(timezone.utc)
+        now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+        amount_paid = 0.0 if is_grant else float(payload.get("amount", pkg["price"]))
+        prefix = "ADMIN" if is_grant else "MANUAL"
+        tx_ref = f"{prefix}-{uuid.uuid4().hex[:10].upper()}"
+        note = payload.get("notes") or (f"Admin granted {days} days" if (is_grant and days) else "Admin recorded payment")
+        if not is_grant and payload.get("transaction_reference"):
+            note = f"{note} (ref {payload.get('transaction_reference')})"
+
+        txn_id = f"TXN-{uuid.uuid4().hex[:8].upper()}"
+        with conn:
+            conn.execute("""
+                INSERT INTO transactions (
+                    id, transaction_date, user_id, package_id,
+                    product_or_package, amount, refund_amount, fee_amount, net_amount,
+                    currency, payment_status, payment_provider, transaction_reference,
+                    is_verified, notes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 0.0, 0.0, ?, 'USD', 'Verified', ?, ?, 1, ?, ?)
+            """, (txn_id, now_str, user_id, package_id, pkg["name"], amount_paid, amount_paid,
+                  provider, tx_ref, note, now_str))
+        sub_id = grant_subscription(conn, user_id, pkg, days, tx_ref, amount_paid, provider, note)
+        recalculate_all_subscription_statuses(conn)  # also syncs to MongoDB
+        return {"status": "success", "subscription_id": sub_id, "transaction_id": txn_id}
+    finally:
         conn.close()
-        raise HTTPException(status_code=404, detail="Package not found")
 
-    now_dt = datetime.now(timezone.utc)
-    now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-
-    # Expiry calculation
-    is_lifetime = (pkg["billing_type"] == "one_time" or pkg["billing_interval"] == "lifetime")
-    if is_lifetime:
-        expiry_str = None
-        next_renewal = None
-        billing_interval = "lifetime"
-        sub_status = "Lifetime"
-    else:
-        expiry_dt = now_dt + timedelta(days=30)
-        expiry_str = expiry_dt.strftime("%Y-%m-%d %H:%M:%S")
-        next_renewal = expiry_dt.strftime("%Y-%m-%d")
-        billing_interval = pkg["billing_interval"]
-        sub_status = "Active"
-
-    sub_id = f"SUB-{now_dt.strftime('%y%m%d%H%M%S')}"
-    tx_ref = payload.get("transaction_reference") or f"TXN-MANUAL-{now_dt.strftime('%m%d%H%M')}"
-    amount_paid = float(payload.get("amount", pkg["price"]))
-
-    with conn:
-        conn.execute("""
-            INSERT INTO subscriptions (
-                id, user_id, package_id, product_or_package, start_date, expiry_date,
-                billing_interval, status, payment_status, next_renewal_date,
-                cancellation_date, last_successful_payment, payment_transaction_ref,
-                amount_paid, currency, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Verified', ?, NULL, ?, ?, ?, 'USD', ?, ?)
-        """, (
-            sub_id, user_id, package_id, pkg["name"], now_str, expiry_str,
-            billing_interval, sub_status, next_renewal, now_str, tx_ref,
-            amount_paid, now_str, now_str
-        ))
-
-        # Update user package info
-        conn.execute("""
-            UPDATE users
-            SET package_name = ?,
-                product_owned = CASE 
-                    WHEN ? = 'photobook' THEN 'Smart Ease Photobook Designer'
-                    WHEN ? = 'ease_select' THEN 'Ease Select'
-                    ELSE 'Both products' END,
-                updated_at = ?
-            WHERE id = ?
-        """, (pkg["name"], pkg["product_access"], pkg["product_access"], now_str, user_id))
-
-        # Record verified transaction
-        txn_id = f"TXN-{now_dt.strftime('%y%m%d%H%M%S')}"
-        conn.execute("""
-            INSERT INTO transactions (
-                id, transaction_date, user_id, subscription_id, package_id,
-                product_or_package, amount, refund_amount, fee_amount, net_amount,
-                currency, payment_status, payment_provider, transaction_reference,
-                is_verified, notes, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0.0, 0.0, ?, 'USD', 'Verified', ?, ?, 1, ?, ?)
-        """, (
-            txn_id, now_str, user_id, sub_id, package_id, pkg["name"],
-            amount_paid, amount_paid, payload.get("payment_provider", "Manual"),
-            tx_ref, payload.get("notes", "Subscription registered/extended"), now_str
-        ))
-
-    conn.close()
-    return {"status": "success", "subscription_id": sub_id, "transaction_id": txn_id}
-
-@router.post("/subscriptions/{sub_id}/cancel")
+@router.post("/subscriptions/{sub_id}/cancel", dependencies=ADMIN)
 async def cancel_subscription(sub_id: str):
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     conn = get_db_connection()
@@ -923,7 +915,7 @@ async def cancel_subscription(sub_id: str):
 # 5. DAILY AND MONTHLY EARNINGS ENDPOINTS
 # ==========================================
 
-@router.get("/revenue/daily")
+@router.get("/revenue/daily", dependencies=ADMIN)
 async def get_daily_revenue(date: Optional[str] = Query(default=None)):
     if not date:
         date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -975,7 +967,7 @@ async def get_daily_revenue(date: Optional[str] = Query(default=None)):
         "currency": "USD"
     }
 
-@router.get("/revenue/monthly")
+@router.get("/revenue/monthly", dependencies=ADMIN)
 async def get_monthly_revenue(
     year: Optional[int] = Query(default=None),
     month: Optional[int] = Query(default=None)
@@ -1066,7 +1058,7 @@ async def get_monthly_revenue(
         "currency": "USD"
     }
 
-@router.get("/transactions")
+@router.get("/transactions", dependencies=ADMIN)
 async def get_transactions(
     status: Optional[str] = Query(default=None),
     provider: Optional[str] = Query(default=None)
@@ -1094,7 +1086,7 @@ async def get_transactions(
     conn.close()
     return txns
 
-@router.post("/transactions")
+@router.post("/transactions", dependencies=ADMIN)
 async def record_transaction(payload: Dict[str, Any] = Body(...)):
     user_id = payload.get("user_id")
     amount = float(payload.get("amount", 0.0))
@@ -1136,25 +1128,25 @@ async def record_transaction(payload: Dict[str, Any] = Body(...)):
 # 6. CONNECTED APPS & CLIENT SYNC ENDPOINTS
 # ==========================================
 
-@router.get("/apps/status")
+@router.get("/apps/status", dependencies=ADMIN)
 async def get_apps_status():
     status = get_connected_apps_status()
     return status
 
-@router.post("/apps/sync-local")
+@router.post("/apps/sync-local", dependencies=ADMIN)
 async def trigger_local_sync():
     conn = get_db_connection()
     res = sync_local_app_identities(conn)
     conn.close()
     return res
 
-@router.get("/apps/render/ping")
-@router.post("/apps/render/ping")
+@router.get("/apps/render/ping", dependencies=ADMIN)
+@router.post("/apps/render/ping", dependencies=ADMIN)
 async def api_ping_render():
     """Real-time ping to the Render production cloud server & MongoDB Atlas."""
     return ping_render_server()
 
-@router.post("/apps/render/sync")
+@router.post("/apps/render/sync", dependencies=ADMIN)
 async def api_sync_render():
     """Synchronizes users and subscriptions from Render Cloud MongoDB into local database."""
     conn = get_db_connection()
@@ -1163,20 +1155,20 @@ async def api_sync_render():
     conn.close()
     return res
 
-@router.get("/apps/photobook/ping")
-@router.post("/apps/photobook/ping")
+@router.get("/apps/photobook/ping", dependencies=ADMIN)
+@router.post("/apps/photobook/ping", dependencies=ADMIN)
 async def api_ping_photobook():
     """Real-time live ping to the Photobook Studio server on port 8765."""
     return ping_photobook_server()
 
-@router.post("/apps/photobook/push-license")
+@router.post("/apps/photobook/push-license", dependencies=ADMIN)
 async def api_push_photobook_license(payload: Optional[Dict[str, Any]] = Body(default={})):
     """Pushes verified license to local Photobook instance so all buttons work."""
     key = (payload or {}).get("licenseKey") or "SE-LIFETIME-PRO"
     email = (payload or {}).get("email") or "studio@rafiapictures.com"
     return push_license_to_photobook(license_key=key, email=email)
 
-@router.post("/apps/photobook/launch")
+@router.post("/apps/photobook/launch", dependencies=ADMIN)
 async def api_launch_photobook():
     """Launches Photobook Studio launcher in background if not running."""
     import subprocess
@@ -1187,60 +1179,18 @@ async def api_launch_photobook():
     return {"status": "error", "message": "Launcher bat file not found"}
 
 @router.post("/client/verify-license")
-async def client_verify_license(payload: Dict[str, Any] = Body(...)):
+async def client_verify_license(payload: Dict[str, Any] = Body(default={}), user: Dict[str, Any] = Depends(require_user)):
     """
-    Called by Photobook Designer or Ease Select to verify a customer's active license.
+    Called by Photobook Designer or Ease Select (signed in) to check the customer's license.
+    The account comes from the session token, never from the request body.
     """
-    account_id = payload.get("account_id") or payload.get("user_id") or payload.get("email")
     product = (payload.get("product") or "photobook").lower()
+    product = "ease_select" if product in ("select", "ease_select") else "photobook"
+    lic = get_license_status(user["id"], user.get("email") or "", product=product)
 
-    if not account_id:
-        return {"has_access": False, "status": "Invalid Account", "message": "No account identifier provided"}
-
-    recalculate_all_subscription_statuses()
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT u.id, u.full_name, u.smart_ease_account_id,
-               s.id as sub_id, s.status, s.billing_interval, s.expiry_date,
-               s.product_or_package, s.package_id, p.product_access
-        FROM users u
-        LEFT JOIN subscriptions s ON u.id = s.user_id AND s.payment_status = 'Verified'
-        LEFT JOIN packages p ON s.package_id = p.id
-        WHERE u.smart_ease_account_id = ? OR u.email = ? OR u.id = ?
-        ORDER BY s.created_at DESC
-        LIMIT 1
-    """, (account_id, account_id, account_id))
-    row = cursor.fetchone()
-    conn.close()
-
-    if not row or not row["status"]:
-        return {
-            "has_access": False,
-            "status": "Unlicensed",
-            "account_id": account_id,
-            "message": "No active paid license found for this user account"
-        }
-
-    sub_status = row["status"]
-    prod_access = (row["product_access"] or "").lower()
-    is_lifetime = (row["billing_interval"] == "lifetime" or sub_status == "Lifetime")
-
-    # Check product access
-    allowed = False
-    if sub_status in ("Active", "Lifetime", "Expiring Soon"):
-        if prod_access == "both":
-            allowed = True
-        elif product in ("photobook", "designer") and prod_access == "photobook":
-            allowed = True
-        elif product in ("ease_select", "select") and prod_access == "ease_select":
-            allowed = True
-
-    # Automatically record active presence heartbeat upon verification
     try:
         record_presence_heartbeat(
-            account_id=row["smart_ease_account_id"],
+            account_id=user["smart_ease_account_id"],
             product=product,
             mode=payload.get("mode") or "online",
             device_hostname=payload.get("device_hostname"),
@@ -1250,27 +1200,24 @@ async def client_verify_license(payload: Dict[str, Any] = Body(...)):
         print(f"[Presence] Heartbeat record warning: {e}")
 
     return {
-        "has_access": allowed,
-        "status": sub_status,
-        "customer_name": row["full_name"],
-        "account_id": row["smart_ease_account_id"],
-        "package_name": row["product_or_package"],
-        "is_lifetime": is_lifetime,
-        "expiry_date": row["expiry_date"],
-        "is_online": True,
-        "connection_mode": payload.get("mode") or "online",
-        "message": f"License verified: {sub_status}" if allowed else f"Product {product} is not entitled under this subscription"
+        "has_access": lic["active"],
+        "status": lic["status"],
+        "customer_name": user.get("full_name"),
+        "account_id": user["smart_ease_account_id"],
+        "package_name": lic["packageName"],
+        "is_lifetime": lic["lifetime"],
+        "expiry_date": lic["expiryDate"],
+        "license": lic,
+        "message": f"License verified: {lic['status']}" if lic["active"] else "No active license for this product"
     }
 
 @router.post("/client/heartbeat")
-async def client_heartbeat(payload: Dict[str, Any] = Body(...)):
+async def client_heartbeat(payload: Dict[str, Any] = Body(default={}), user: Dict[str, Any] = Depends(require_user)):
     """
     Heartbeat endpoint for client applications (Photobook Designer, Ease Select).
     Updates presence in real-time so administrator knows who is Online vs Offline.
     """
-    account_id = payload.get("account_id") or payload.get("user_id") or payload.get("email")
-    if not account_id:
-        raise HTTPException(status_code=400, detail="account_id is required")
+    account_id = user["smart_ease_account_id"]
 
     product = payload.get("product") or "photobook"
     mode = payload.get("mode") or "online"
@@ -1288,12 +1235,12 @@ async def client_heartbeat(payload: Dict[str, Any] = Body(...)):
     )
     return res
 
-@router.get("/presence/metrics")
+@router.get("/presence/metrics", dependencies=ADMIN)
 async def get_presence_stats():
     """Returns dynamic counts of online, offline, and offline-mode users."""
     return get_presence_metrics()
 
-@router.post("/users/{user_id}/toggle-mode")
+@router.post("/users/{user_id}/toggle-mode", dependencies=ADMIN)
 async def toggle_user_mode(user_id: str, payload: Dict[str, Any] = Body(...)):
     """
     Allows administrator to toggle a customer between 'online' mode and 'offline_mode'
@@ -1309,7 +1256,7 @@ async def toggle_user_mode(user_id: str, payload: Dict[str, Any] = Body(...)):
 # 7. EXPORT DATA ENDPOINTS
 # ==========================================
 
-@router.get("/export/users.csv")
+@router.get("/export/users.csv", dependencies=ADMIN)
 async def export_users_csv():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1352,450 +1299,251 @@ async def export_users_csv():
     )
 
 # ==========================================
-# 8. LIVEPAY (livepay.me) GATEWAY INTEGRATION
+# 8. LIVEPAY CARD PAYMENTS (USD)
 # ==========================================
+# Flow: the signed-in app calls /payments/card/checkout -> LivePay hosted checkout page ->
+# LivePay webhook (signature-checked) or the app's status poll (re-checked with LivePay's API)
+# -> activate_paid_license(). Prices always come from the server, never from the client.
 
 import os
 import uuid
-import httpx
 from mongo_db import sync_sqlite_to_mongo
 
-LIVEPAY_API_KEY = (
-    os.environ.get("LIVEPAY_API_KEY")
-    or os.environ.get("LIVEPAY_WEB_KEY")
-    or os.environ.get("LIVEPAY_SECRET_KEY")
-    or ""
+LIVEPAY_WEBHOOK_URL = os.environ.get(
+    "LIVEPAY_WEBHOOK_URL",
+    "https://smart-ease-photobook-designer.onrender.com/api/v1/payments/livepay/webhook",
 )
-LIVEPAY_ACCOUNT_NUMBER = os.environ.get("LIVEPAY_ACCOUNT_NUMBER") or os.environ.get("LIVEPAY_MERCHANT_ID", "")
-_base_raw = os.environ.get("LIVEPAY_BASE_URL", "https://livepay.me/api").strip()
-if "api.livepay.me" in _base_raw or not _base_raw:
-    LIVEPAY_BASE_URL = "https://livepay.me/api"
-else:
-    LIVEPAY_BASE_URL = _base_raw
+PAYMENT_RETURN_URL = os.environ.get("PAYMENT_RETURN_URL", "")
+LIVEPAY_SUCCESS_STATUSES = ("success", "successful", "completed")
+LIVEPAY_FAILED_STATUSES = ("failed", "failure", "cancelled", "canceled", "declined", "expired", "rejected")
 
-@router.post("/payments/livepay/initiate")
-async def livepay_initiate_payment(payload: Dict[str, Any] = Body(...)):
-    """
-    Initiate a mobile money collection via LivePay.me API (/api/collect-money)
-    Payload: {
-        "account_id": "a6c0fee1d5422ef8",
-        "package_id": "pkg_photobook",
-        "phone_number": "0777123456",
-        "currency": "UGX",
-        "amount": 10000
-    }
-    """
-    account_id = payload.get("account_id")
-    package_id = payload.get("package_id")
-    phone = payload.get("phone_number") or payload.get("phoneNumber", "")
-    currency = payload.get("currency", "UGX")
+PACKAGE_ALIASES = {"pkg_select": "pkg_ease_select"}
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
 
-    # Verify user exists or create
-    cursor.execute("SELECT * FROM users WHERE smart_ease_account_id = ?", (account_id,))
-    user = cursor.fetchone()
-    if not user:
-        new_uid = f"USR-{uuid.uuid4().hex[:8].upper()}"
-        now_str = datetime.now(timezone.utc).isoformat()
-        cust_email = payload.get("email") or f"{phone}@mobilepay.local"
-        with conn:
-            conn.execute("""
-                INSERT INTO users (id, smart_ease_account_id, full_name, email, registered_date, product_owned, package_name, source_app, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (new_uid, account_id, payload.get("email") or f"Customer {phone}", cust_email, now_str, "Smart Ease Photobook Designer", "Photobook Pro", "Photobook", now_str, now_str))
-        cursor.execute("SELECT * FROM users WHERE smart_ease_account_id = ?", (account_id,))
-        user = cursor.fetchone()
-
-    # Verify package
-    cursor.execute("SELECT * FROM packages WHERE id = ?", (package_id,))
+def _get_active_package(cursor, package_id: str) -> Dict[str, Any]:
+    package_id = PACKAGE_ALIASES.get(package_id, package_id)
+    cursor.execute("SELECT * FROM packages WHERE id = ? AND is_active = 1", (package_id,))
     pkg = cursor.fetchone()
     if not pkg:
-        default_packages = {
-            "pkg_photobook": ("Smart Ease Photobook Designer", 2.45, "monthly"),
-            "pkg_bundle": ("Smart Ease Photobook Designer + Ease Select", 3.00, "monthly"),
-            "pkg_select": ("Ease Select", 2.45, "monthly"),
-            "pkg_ease_select": ("Ease Select", 2.45, "monthly"),
-            "pkg_lifetime": ("Lifetime Pro", 200.00, "lifetime")
-        }
-        pkg_tuple = default_packages.get(package_id, ("Smart Ease Photobook Designer", 2.45, "monthly"))
-        pkg = {"id": package_id, "name": pkg_tuple[0], "price": pkg_tuple[1], "billing_interval": pkg_tuple[2]}
-    else:
-        pkg = dict(pkg)
+        raise HTTPException(status_code=404, detail="Unknown or inactive package.")
+    return dict(pkg)
 
-    amount = float(payload.get("amount") or pkg["price"])
-    tx_ref = f"LP{uuid.uuid4().hex[:14].upper()}"
-    now_iso = datetime.now(timezone.utc).isoformat()
 
-    # Pre-record pending transaction
+def _new_expiry(cursor, user_id: str, package_id: str, days: int) -> str:
+    """Extends from the end of a still-running subscription for the same package, else from now."""
+    start = datetime.now(timezone.utc).replace(tzinfo=None)
+    cursor.execute("""
+        SELECT expiry_date FROM subscriptions
+        WHERE user_id = ? AND package_id = ? AND payment_status = 'Verified'
+          AND status IN ('Active', 'Expiring Soon') AND expiry_date IS NOT NULL
+        ORDER BY expiry_date DESC LIMIT 1
+    """, (user_id, package_id))
+    row = cursor.fetchone()
+    if row:
+        try:
+            current = datetime.strptime(row["expiry_date"].split(".")[0].replace("T", " "), "%Y-%m-%d %H:%M:%S")
+            if current > start:
+                start = current
+        except ValueError:
+            pass
+    return (start + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def grant_subscription(conn, user_id: str, pkg: Dict[str, Any], days: Optional[int],
+                       tx_ref: str, amount: float, provider: str, notes: str) -> str:
+    """Creates a verified subscription. days=None means lifetime (only for lifetime packages)."""
+    cursor = conn.cursor()
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    is_lifetime = pkg.get("billing_interval") == "lifetime" or pkg.get("billing_type") == "one_time"
+    if days is None and not is_lifetime:
+        days = 30
+    expiry = None if days is None else _new_expiry(cursor, user_id, pkg["id"], days)
+    sub_id = f"SUB-{uuid.uuid4().hex[:10].upper()}"
     with conn:
         conn.execute("""
-            INSERT INTO transactions (
-                id, transaction_date, user_id, package_id, product_or_package,
-                amount, refund_amount, fee_amount, net_amount, currency,
-                payment_status, payment_provider, transaction_reference, is_verified, notes, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO subscriptions (
+                id, user_id, package_id, product_or_package, start_date, expiry_date,
+                billing_interval, status, payment_status, next_renewal_date,
+                last_successful_payment, payment_transaction_ref, amount_paid, currency,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Verified', ?, ?, ?, ?, 'USD', ?, ?)
         """, (
-            f"TXN-{uuid.uuid4().hex[:8].upper()}",
-            now_iso,
-            user["id"],
-            pkg["id"],
-            pkg["name"],
-            amount,
-            0.0,
-            0.0,
-            amount,
-            currency,
-            "Pending",
-            "LivePay",
-            tx_ref,
-            0,
-            f"LivePay collection initiated for {phone}",
-            now_iso
+            sub_id, user_id, pkg["id"], pkg["name"], now_str, expiry,
+            "lifetime" if expiry is None else pkg.get("billing_interval", "monthly"),
+            "Lifetime" if expiry is None else "Active",
+            None if expiry is None else expiry[:10],
+            now_str, tx_ref, amount, now_str, now_str,
         ))
+        conn.execute("UPDATE users SET package_name = ?, updated_at = ? WHERE id = ?", (pkg["name"], now_str, user_id))
+        conn.execute("UPDATE transactions SET subscription_id = ? WHERE transaction_reference = ?", (sub_id, tx_ref))
+    print(f"[License] {provider}: {pkg['id']} for {user_id} until {expiry or 'lifetime'} ({notes})")
+    return sub_id
 
-    api_key = LIVEPAY_API_KEY
-    account_num = LIVEPAY_ACCOUNT_NUMBER or payload.get("account_number", "")
 
-    if not api_key:
-        conn.close()
-        return {
-            "status": "pending",
-            "transaction_reference": tx_ref,
-            "message": "Payment recorded locally (LIVEPAY_API_KEY not configured yet)",
-            "test_mode": True
-        }
-
-    # Dispatch to LivePay API /api/collect-money
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-            body = {
-                "accountNumber": account_num,
-                "phoneNumber": phone,
-                "amount": amount,
-                "currency": currency,
-                "reference": tx_ref,
-                "description": f"Smart Ease: {pkg['name']}"
-            }
-            url = f"{LIVEPAY_BASE_URL.rstrip('/')}/collect-money"
-            resp = await client.post(url, json=body, headers=headers)
-            livepay_data = resp.json() if resp.status_code < 400 else {"http_error": resp.status_code, "raw": resp.text}
-    except Exception as e:
-        livepay_data = {"error": str(e)}
-
-    conn.close()
-    return {
-        "status": "initiated",
-        "transaction_reference": tx_ref,
-        "amount": amount,
-        "currency": currency,
-        "livepay_response": livepay_data
-    }
-
-@router.post("/payments/livepay/webhook")
-async def livepay_webhook(payload: Dict[str, Any] = Body(...)):
-    """
-    Asynchronous Webhook from LivePay when a customer completes payment.
-    Activates subscription and logs verified transaction.
-    """
-    tx_ref = payload.get("reference") or payload.get("tx_ref") or payload.get("transaction_id")
-    event_status = (payload.get("status") or "").lower()
-    amount = float(payload.get("amount") or 0.0)
-
-    if not tx_ref:
-        return {"status": "ignored", "reason": "No reference in webhook"}
-
-    conn = get_db_connection()
+def activate_paid_license(conn, tx_ref: str, paid_amount: Optional[float], paid_currency: Optional[str], source: str) -> bool:
+    """Marks a pending LivePay transaction verified and grants its package. Safe to call twice."""
     cursor = conn.cursor()
-
-    # Find pending transaction
     cursor.execute("SELECT * FROM transactions WHERE transaction_reference = ?", (tx_ref,))
     txn = cursor.fetchone()
-
-    is_success = event_status in ("success", "successful", "completed", "paid")
-    new_status = "Verified" if is_success else "Failed"
-    now_dt = datetime.now(timezone.utc)
-    now_iso = now_dt.isoformat()
-
-    if txn:
-        user_id = txn["user_id"]
-        pkg_id = txn["package_id"]
-        with conn:
-            conn.execute("""
-                UPDATE transactions
-                SET payment_status = ?, is_verified = ?, notes = ?
-                WHERE transaction_reference = ?
-            """, (
-                new_status,
-                1 if is_success else 0,
-                f"LivePay webhook received: {event_status}",
-                tx_ref
-            ))
-    else:
-        # Fallback if transaction was not pre-recorded
-        account_id = payload.get("customer_id") or payload.get("account_id")
-        cursor.execute("SELECT * FROM users WHERE smart_ease_account_id = ?", (account_id,))
-        u = cursor.fetchone()
-        user_id = u["id"] if u else None
-        pkg_id = "pkg_photobook"
-
-    if is_success and user_id:
-        cursor.execute("SELECT * FROM packages WHERE id = ?", (pkg_id,))
-        pkg = cursor.fetchone()
-        is_lifetime = (pkg and pkg["billing_interval"] == "lifetime")
-
-        expiry_dt = None if is_lifetime else (now_dt + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
-        sub_status = "Lifetime" if is_lifetime else "Active"
-
-        # Check existing subscription
-        cursor.execute("SELECT * FROM subscriptions WHERE user_id = ?", (user_id,))
-        existing_sub = cursor.fetchone()
-
-        with conn:
-            if existing_sub:
-                conn.execute("""
-                    UPDATE subscriptions
-                    SET status = ?, payment_status = 'Verified', expiry_date = ?,
-                        amount_paid = ?, last_successful_payment = ?, payment_transaction_ref = ?,
-                        updated_at = ?
-                    WHERE id = ?
-                """, (
-                    sub_status, expiry_dt, amount or existing_sub["amount_paid"],
-                    now_iso, tx_ref, now_iso, existing_sub["id"]
-                ))
-            else:
-                conn.execute("""
-                    INSERT INTO subscriptions (
-                        id, user_id, package_id, product_or_package, start_date, expiry_date,
-                        billing_interval, status, payment_status, last_successful_payment,
-                        payment_transaction_ref, amount_paid, currency, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    f"SUB-{uuid.uuid4().hex[:8].upper()}",
-                    user_id,
-                    pkg_id or "pkg_photobook",
-                    pkg["name"] if pkg else "Smart Ease Photobook Designer",
-                    now_iso,
-                    expiry_dt,
-                    "lifetime" if is_lifetime else "monthly",
-                    sub_status,
-                    "Verified",
-                    now_iso,
-                    tx_ref,
-                    amount,
-                    payload.get("currency", "USD"),
-                    now_iso,
-                    now_iso
-                ))
-
-    # Synchronize to MongoDB cloud
-    sync_sqlite_to_mongo(conn)
-    conn.close()
-
-    return {"status": "ok", "processed": True, "event": event_status, "reference": tx_ref}
-
-@router.get("/payments/livepay/status/{reference}")
-async def livepay_check_status(reference: str):
-    """Poll transaction status for client application."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM transactions WHERE transaction_reference = ?", (reference,))
-    txn = cursor.fetchone()
-    conn.close()
-
     if not txn:
-        raise HTTPException(status_code=404, detail="Transaction reference not found")
+        print(f"[LivePay] {source}: unknown reference {tx_ref}")
+        return False
+    if txn["is_verified"]:
+        return True  # already processed
+    if paid_amount is not None and float(paid_amount) + 0.001 < float(txn["amount"]):
+        print(f"[LivePay] {source}: amount mismatch for {tx_ref} (paid {paid_amount}, expected {txn['amount']})")
+        return False
+    if paid_currency and paid_currency.upper() != (txn["currency"] or "USD").upper():
+        print(f"[LivePay] {source}: currency mismatch for {tx_ref}")
+        return False
 
-    lic_key = None
-    if bool(txn["is_verified"]):
-        raw_pkg = txn["package_id"] or "pkg_photobook"
-        key_pfx = "SE-PHOTOBOOK" if "photobook" in raw_pkg else ("SE-BUNDLE" if "bundle" in raw_pkg else ("SE-SELECT" if "select" in raw_pkg else "SE-LIFETIME"))
-        lic_key = f"{key_pfx}-{uuid.uuid4().hex[:8].upper()}-PRO"
-
-    return {
-        "reference": reference,
-        "payment_status": txn["payment_status"],
-        "is_verified": bool(txn["is_verified"]),
-        "amount": txn["amount"],
-        "currency": txn["currency"],
-        "transaction_date": txn["transaction_date"],
-        "license_key": lic_key,
-        "licenseKey": lic_key
-    }
-
-# ==========================================
-# 9. CARD PAYMENT (USD) CHECKOUT PROCESSING
-# ==========================================
-
-@router.post("/payments/card/process")
-async def card_process_payment(payload: Dict[str, Any] = Body(...)):
-    """
-    Card Payment (USD) Processing for Smart Ease packages.
-    Validates card format, records verified USD transaction, activates/renews user subscription,
-    and synchronizes to MongoDB Atlas.
-    """
-    account_id = payload.get("account_id") or "a6c0fee1d5422ef8"
-    raw_pkg_id = payload.get("package_id") or payload.get("packageId") or "pkg_photobook"
-    
-    # Map pkg_select to pkg_ease_select if needed
-    pkg_alias_map = {
-        "pkg_select": "pkg_ease_select",
-        "pkg_ease_select": "pkg_ease_select",
-        "pkg_photobook": "pkg_photobook",
-        "pkg_bundle": "pkg_bundle",
-        "pkg_lifetime": "pkg_lifetime"
-    }
-    package_id = pkg_alias_map.get(raw_pkg_id, raw_pkg_id)
-
-    card_info = payload.get("card") or {}
-    card_number = str(card_info.get("number") or "").replace(" ", "").replace("-", "")
-    card_holder = str(card_info.get("name") or "Cardholder").strip()
-    card_expiry = str(card_info.get("expiry") or "").strip()
-    currency = "USD"
-
-    # Card validation: at least 13 digits, numeric
-    if len(card_number) < 13 or not card_number.isdigit():
-        raise HTTPException(status_code=400, detail="Invalid card number format. Please provide a valid card number.")
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    # Find or auto-create user
-    cursor.execute("SELECT * FROM users WHERE smart_ease_account_id = ?", (account_id,))
-    user = cursor.fetchone()
-    if not user:
-        new_uid = f"USR-{uuid.uuid4().hex[:8].upper()}"
-        now_str = datetime.now(timezone.utc).isoformat()
-        with conn:
-            conn.execute("""
-                INSERT INTO users (id, smart_ease_account_id, full_name, email, registered_date, product_owned, package_name, source_app, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (new_uid, account_id, card_holder or "Smart Ease Pro User", f"{account_id}@smartease.local", now_str, "Smart Ease Photobook Designer", "Photobook Pro", "Photobook", now_str, now_str))
-        cursor.execute("SELECT * FROM users WHERE smart_ease_account_id = ?", (account_id,))
-        user = cursor.fetchone()
-
-    # Retrieve package info from database or default packages
-    cursor.execute("SELECT * FROM packages WHERE id = ?", (package_id,))
+    cursor.execute("SELECT * FROM packages WHERE id = ?", (txn["package_id"],))
     pkg_row = cursor.fetchone()
     if not pkg_row:
-        default_packages = {
-            "pkg_photobook": ("Smart Ease Photobook Designer", 2.45, "monthly"),
-            "pkg_bundle": ("Smart Ease Photobook Designer + Ease Select", 3.00, "monthly"),
-            "pkg_ease_select": ("Ease Select", 2.45, "monthly"),
-            "pkg_lifetime": ("Lifetime Pro", 200.00, "lifetime")
-        }
-        pkg_tuple = default_packages.get(package_id, ("Smart Ease Photobook Designer", 2.45, "monthly"))
-        pkg = {"id": package_id, "name": pkg_tuple[0], "price": pkg_tuple[1], "billing_interval": pkg_tuple[2]}
-    else:
-        pkg = dict(pkg_row)
-
-    amount = float(payload.get("amount") or pkg["price"])
-    tx_ref = f"CARD-{uuid.uuid4().hex[:12].upper()}"
-    now_dt = datetime.now(timezone.utc)
-    now_iso = now_dt.isoformat()
-    last4 = card_number[-4:] if len(card_number) >= 4 else "0000"
-
-    # Insert verified transaction in USD
+        print(f"[LivePay] {source}: package {txn['package_id']} missing for {tx_ref}")
+        return False
     with conn:
         conn.execute("""
-            INSERT INTO transactions (
-                id, transaction_date, user_id, package_id, product_or_package,
-                amount, refund_amount, fee_amount, net_amount, currency,
-                payment_status, payment_provider, transaction_reference, is_verified, notes, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            f"TXN-{uuid.uuid4().hex[:8].upper()}",
-            now_iso,
-            user["id"],
-            pkg["id"],
-            pkg["name"],
-            amount,
-            0.0,
-            0.0,
-            amount,
-            currency,
-            "Verified",
-            "Card (USD)",
-            tx_ref,
-            1,
-            f"Card payment for {pkg['name']} (USD {amount:.2f}) - {card_holder} (ending in {last4})",
-            now_iso
-        ))
+            UPDATE transactions SET payment_status = 'Verified', is_verified = 1, notes = ?
+            WHERE transaction_reference = ? AND is_verified = 0
+        """, (f"Verified by LivePay ({source})", tx_ref))
+    grant_subscription(conn, txn["user_id"], dict(pkg_row), None, tx_ref, float(txn["amount"]), "LivePay Card", source)
+    recalculate_all_subscription_statuses(conn)  # also syncs to MongoDB
+    return True
 
-    is_lifetime = (pkg.get("billing_interval") == "lifetime" or package_id == "pkg_lifetime")
-    expiry_dt = None if is_lifetime else (now_dt + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
-    sub_status = "Lifetime" if is_lifetime else "Active"
 
-    cursor.execute("SELECT * FROM subscriptions WHERE user_id = ?", (user["id"],))
-    existing_sub = cursor.fetchone()
-
+def _mark_failed(conn, tx_ref: str, reason: str):
     with conn:
-        if existing_sub:
-            conn.execute("""
-                UPDATE subscriptions
-                SET package_id = ?, product_or_package = ?, status = ?, payment_status = 'Verified',
-                    expiry_date = ?, amount_paid = ?, currency = 'USD', last_successful_payment = ?,
-                    payment_transaction_ref = ?, updated_at = ?
-                WHERE id = ?
-            """, (
-                pkg["id"], pkg["name"], sub_status, expiry_dt, amount,
-                now_iso, tx_ref, now_iso, existing_sub["id"]
-            ))
-        else:
-            conn.execute("""
-                INSERT INTO subscriptions (
-                    id, user_id, package_id, product_or_package, start_date, expiry_date,
-                    billing_interval, status, payment_status, last_successful_payment,
-                    payment_transaction_ref, amount_paid, currency, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                f"SUB-{uuid.uuid4().hex[:8].upper()}",
-                user["id"],
-                pkg["id"],
-                pkg["name"],
-                now_iso,
-                expiry_dt,
-                "lifetime" if is_lifetime else "monthly",
-                sub_status,
-                "Verified",
-                now_iso,
-                tx_ref,
-                amount,
-                "USD",
-                now_iso,
-                now_iso
-            ))
+        conn.execute("""
+            UPDATE transactions SET payment_status = 'Failed', notes = ?
+            WHERE transaction_reference = ? AND is_verified = 0
+        """, (reason, tx_ref))
+    sync_sqlite_to_mongo(conn)
 
-    # Synchronize to MongoDB Atlas cloud
+
+@router.post("/payments/card/checkout")
+async def card_checkout(payload: Dict[str, Any] = Body(...), user: Dict[str, Any] = Depends(require_user)):
+    """Starts a LivePay hosted card checkout for the signed-in customer. Returns the checkout URL."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
     try:
+        pkg = _get_active_package(cursor, payload.get("package_id") or payload.get("packageId") or "")
+        amount = fmt_money(pkg["price"])
+        email = user.get("email") or ""
+        if not email:
+            raise HTTPException(status_code=400, detail="Your account needs an email address before paying.")
+
+        tx_ref = f"SE{uuid.uuid4().hex[:16].upper()}"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with conn:
+            conn.execute("""
+                INSERT INTO transactions (
+                    id, transaction_date, user_id, package_id, product_or_package,
+                    amount, refund_amount, fee_amount, net_amount, currency,
+                    payment_status, payment_provider, transaction_reference, is_verified, notes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 0.0, 0.0, ?, 'USD', 'Pending', 'LivePay Card', ?, 0, ?, ?)
+            """, (
+                f"TXN-{uuid.uuid4().hex[:8].upper()}", now_iso, user["id"], pkg["id"], pkg["name"],
+                amount, amount, tx_ref, "Card checkout started", now_iso,
+            ))
         sync_sqlite_to_mongo(conn)
-    except Exception as me:
-        print(f"[MongoSync] Warning: {me}")
 
-    conn.close()
+        try:
+            checkout = await livepay_create_card_checkout(
+                reference=tx_ref, amount=amount, email=email,
+                description=f"Smart Ease: {pkg['name']}",
+                return_url=PAYMENT_RETURN_URL or None,
+            )
+        except HTTPException as e:
+            _mark_failed(conn, tx_ref, f"Checkout could not be created: {e.detail}")
+            raise
 
-    key_prefix = "SE-PHOTOBOOK" if "photobook" in package_id else ("SE-BUNDLE" if "bundle" in package_id else ("SE-SELECT" if "select" in package_id else "SE-LIFETIME"))
-    generated_lic = f"{key_prefix}-{uuid.uuid4().hex[:8].upper()}-PRO"
+        return {
+            "success": True,
+            "reference": tx_ref,
+            "checkout_url": checkout["checkout_url"],
+            "packageId": pkg["id"],
+            "packageName": pkg["name"],
+            "amount": amount,
+            "currency": "USD",
+        }
+    finally:
+        conn.close()
 
-    return {
-        "success": True,
-        "status": "Verified",
-        "is_verified": True,
-        "transaction_reference": tx_ref,
-        "packageName": pkg["name"],
-        "packageId": pkg["id"],
-        "amount": amount,
-        "currency": "USD",
-        "license_key": generated_lic,
-        "licenseKey": generated_lic,
-        "message": f"✓ Payment of USD {amount:.2f} verified via Card! Full access unlocked."
-    }
 
+@router.post("/payments/livepay/webhook")
+async def livepay_webhook(request: Request):
+    """LivePay calls this when a transaction completes. Only signature-verified calls are trusted."""
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    if not verify_livepay_signature(request.headers.get("x-webhook-signature"), LIVEPAY_WEBHOOK_URL, payload):
+        print(f"[LivePay] Rejected webhook with missing/invalid signature for {payload.get('customer_reference')}")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    tx_ref = payload.get("customer_reference") or payload.get("reference")
+    status = (payload.get("status") or "").lower()
+    if not tx_ref:
+        return {"status": "ignored", "reason": "No reference"}
+
+    conn = get_db_connection()
+    try:
+        if status in LIVEPAY_SUCCESS_STATUSES:
+            amount = payload.get("amount")
+            activate_paid_license(conn, tx_ref, float(amount) if amount not in (None, "") else None,
+                                  payload.get("currency"), "webhook")
+        elif status in LIVEPAY_FAILED_STATUSES:
+            _mark_failed(conn, tx_ref, f"LivePay reported: {payload.get('message') or status}")
+    finally:
+        conn.close()
+    return {"status": "ok"}
+
+
+@router.get("/payments/livepay/status/{reference}")
+async def livepay_check_status(reference: str, user: Dict[str, Any] = Depends(require_user)):
+    """Polled by the app after opening checkout. Confirms with LivePay directly if still pending."""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM transactions WHERE transaction_reference = ?", (reference,))
+        txn = cursor.fetchone()
+        if not txn or txn["user_id"] != user["id"]:
+            raise HTTPException(status_code=404, detail="Transaction reference not found")
+
+        if not txn["is_verified"] and txn["payment_status"] == "Pending":
+            lp = await livepay_transaction_status(reference, txn["currency"] or "USD")
+            lp_status = ((lp or {}).get("status") or "").lower()
+            if lp_status in LIVEPAY_SUCCESS_STATUSES:
+                amount = (lp or {}).get("amount")
+                activate_paid_license(conn, reference, float(amount) if amount not in (None, "") else None,
+                                      (lp or {}).get("currency"), "status-check")
+            elif lp_status in LIVEPAY_FAILED_STATUSES:
+                _mark_failed(conn, reference, f"LivePay reported: {(lp or {}).get('message') or lp_status}")
+            cursor.execute("SELECT * FROM transactions WHERE transaction_reference = ?", (reference,))
+            txn = cursor.fetchone()
+
+        return {
+            "reference": reference,
+            "payment_status": txn["payment_status"],
+            "is_verified": bool(txn["is_verified"]),
+            "amount": txn["amount"],
+            "currency": txn["currency"],
+            "license": get_license_status(user["id"], user.get("email") or "", conn),
+        }
+    finally:
+        conn.close()
+
+
+@router.post("/payments/card/process")
+async def card_process_payment_removed():
+    raise HTTPException(status_code=410, detail="Card details are no longer accepted here. Use /payments/card/checkout.")
+
+
+@router.post("/payments/livepay/initiate")
+async def livepay_initiate_removed():
+    raise HTTPException(status_code=410, detail="Mobile money is not offered. Use /payments/card/checkout.")
 
 
 
@@ -1843,6 +1591,67 @@ def get_user_subscription_info(user_id: str, email: str, conn: Optional[Any] = N
         "lifetimePro": False,
         "expiryDate": None
     }
+
+def get_license_status(user_id: str, email: str, conn: Optional[Any] = None, product: str = "photobook") -> Dict[str, Any]:
+    """The customer's current license, as the desktop apps should enforce it."""
+    should_close = conn is None
+    if conn is None:
+        conn = get_db_connection()
+    recalculate_all_subscription_statuses(conn)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT s.*, p.name AS pkg_name, p.product_access
+        FROM subscriptions s
+        LEFT JOIN packages p ON s.package_id = p.id
+        WHERE s.user_id = ? AND s.payment_status = 'Verified'
+          AND s.status IN ('Active', 'Expiring Soon', 'Lifetime')
+        ORDER BY CASE WHEN s.expiry_date IS NULL THEN 1 ELSE 0 END DESC, s.expiry_date DESC
+    """, (user_id,))
+    rows = cursor.fetchall()
+    if should_close:
+        conn.close()
+
+    product = (product or "photobook").lower()
+    for sub in rows:
+        access = (sub["product_access"] or "").lower()
+        if access == "both" or access == product or (product == "select" and access == "ease_select"):
+            return {
+                "active": True,
+                "status": sub["status"],
+                "packageId": sub["package_id"],
+                "packageName": sub["pkg_name"] or sub["product_or_package"],
+                "lifetime": sub["expiry_date"] is None,
+                "expiryDate": sub["expiry_date"],
+                "source": "admin" if (sub["payment_transaction_ref"] or "").startswith("ADMIN-") else "payment",
+                "checkedAt": datetime.now(timezone.utc).isoformat(),
+            }
+    return {
+        "active": False,
+        "status": "No active license",
+        "packageId": None,
+        "packageName": None,
+        "lifetime": False,
+        "expiryDate": None,
+        "source": None,
+        "checkedAt": datetime.now(timezone.utc).isoformat(),
+    }
+
+def _auth_response(user_id: str, email: str, name: str, auth_provider: str, conn, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    license_info = get_license_status(user_id, email, conn)
+    user = {
+        "id": user_id,
+        "userId": user_id,
+        "name": name,
+        "fullName": name,
+        "email": email,
+        "authProvider": auth_provider,
+        "status": "active" if license_info["active"] else "locked",
+        "packageName": license_info["packageName"] or "No active license",
+        "lifetimePro": license_info["lifetime"],
+    }
+    if extra:
+        user.update(extra)
+    return {"success": True, "token": create_session(user_id, email), "user": user, "license": license_info}
 
 @router.post("/auth/register")
 async def register_auth_user(payload: Dict[str, Any] = Body(...)):
@@ -1920,22 +1729,10 @@ async def register_auth_user(payload: Dict[str, Any] = Body(...)):
         except Exception as me:
             print(f"[MongoDB] Error upserting user: {me}")
 
-    conn.close()
-
-    return {
-        "success": True,
-        "user": {
-            "id": user_id,
-            "userId": user_id,
-            "name": full_name,
-            "fullName": full_name,
-            "email": email,
-            "authProvider": "email",
-            "status": sub_info["status"],
-            "packageName": sub_info["packageName"],
-            "lifetimePro": sub_info["lifetimePro"]
-        }
-    }
+    try:
+        return _auth_response(user_id, email, full_name, "email", conn)
+    finally:
+        conn.close()
 
 @router.post("/auth/login")
 async def login_auth_user(payload: Dict[str, Any] = Body(...)):
@@ -2024,32 +1821,37 @@ async def login_auth_user(payload: Dict[str, Any] = Body(...)):
     except Exception as log_e:
         print(f"[LoginSecurity] Log error: {log_e}")
 
-    conn.close()
-
-    return {
-        "success": True,
-        "user": {
-            "id": user_id,
-            "userId": user_id,
-            "name": user_record.get("full_name") or user_record.get("name") or email.split("@")[0].capitalize(),
-            "fullName": user_record.get("full_name") or user_record.get("name"),
-            "email": email,
-            "authProvider": auth_prov,
-            "status": sub_info["status"],
-            "packageName": sub_info["packageName"],
-            "lifetimePro": sub_info["lifetimePro"]
-        }
-    }
+    display_name = user_record.get("full_name") or user_record.get("name") or email.split("@")[0].capitalize()
+    try:
+        return _auth_response(user_id, email, display_name, auth_prov, conn)
+    finally:
+        conn.close()
 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 
+async def _verify_google_id_token(id_token: str) -> Dict[str, Any]:
+    """Asks Google to validate the ID token; identity fields come from Google, never from the client."""
+    if not id_token:
+        raise HTTPException(status_code=400, detail="Google sign-in token is required.")
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get("https://oauth2.googleapis.com/tokeninfo", params={"id_token": id_token})
+    if resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Google sign-in could not be verified.")
+    info = resp.json()
+    if GOOGLE_CLIENT_ID and info.get("aud") != GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=401, detail="Google sign-in was issued for a different app.")
+    if str(info.get("email_verified")).lower() != "true":
+        raise HTTPException(status_code=401, detail="Your Google email address is not verified.")
+    return info
+
 @router.post("/auth/google")
 async def google_auth_user(payload: Dict[str, Any] = Body(...)):
-    email = (payload.get("email") or "").strip().lower()
-    name = (payload.get("name") or payload.get("fullName") or "").strip()
-    google_id = (payload.get("googleId") or payload.get("google_id") or "").strip()
-    avatar_url = (payload.get("avatarUrl") or payload.get("avatar_url") or "").strip()
+    google_info = await _verify_google_id_token(payload.get("idToken") or payload.get("id_token") or "")
+    email = (google_info.get("email") or "").strip().lower()
+    name = (google_info.get("name") or payload.get("name") or payload.get("fullName") or "").strip()
+    google_id = (google_info.get("sub") or "").strip()
+    avatar_url = (google_info.get("picture") or payload.get("avatarUrl") or "").strip()
     source_app = payload.get("sourceApp") or "Photobook"
 
     if not email or "@" not in email:
@@ -2178,23 +1980,31 @@ async def google_auth_user(payload: Dict[str, Any] = Body(...)):
     except Exception as log_e:
         print(f"[GoogleLoginSecurity] Log error: {log_e}")
 
-    conn.close()
+    try:
+        return _auth_response(user_id, email, name, "google", conn, {"avatarUrl": avatar_url})
+    finally:
+        conn.close()
 
+
+@router.get("/auth/me")
+async def auth_me(product: str = Query(default="photobook"), user: Dict[str, Any] = Depends(require_user)):
+    """Current account and license. The desktop apps call this on start-up and periodically."""
     return {
         "success": True,
         "user": {
-            "id": user_id,
-            "userId": user_id,
-            "name": name,
-            "fullName": name,
-            "email": email,
-            "authProvider": "google",
-            "avatarUrl": avatar_url,
-            "status": sub_info["status"],
-            "packageName": sub_info["packageName"],
-            "lifetimePro": sub_info["lifetimePro"]
-        }
+            "id": user["id"],
+            "name": user.get("full_name"),
+            "email": user.get("email"),
+            "authProvider": user.get("auth_provider", "email"),
+        },
+        "license": get_license_status(user["id"], user.get("email") or "", product=product),
     }
+
+
+@router.post("/auth/logout")
+async def auth_logout(user: Dict[str, Any] = Depends(require_user)):
+    delete_session(user["_session_token"])
+    return {"success": True}
 
 
 # ==========================================
@@ -2202,7 +2012,7 @@ async def google_auth_user(payload: Dict[str, Any] = Body(...)):
 # ==========================================
 
 @router.post("/logins/record")
-async def api_record_login(payload: Dict[str, Any] = Body(...)):
+async def api_record_login(payload: Dict[str, Any] = Body(...), user: Dict[str, Any] = Depends(require_user)):
     """
     Records a user login from client desktop apps or web and dispatches a real-time security alert.
     """
@@ -2210,13 +2020,14 @@ async def api_record_login(payload: Dict[str, Any] = Body(...)):
         from database import record_user_login
         from email_service import dispatch_login_security_email
 
-        email = (payload.get("email") or "").strip().lower()
-        full_name = payload.get("fullName") or payload.get("full_name") or payload.get("name")
+        # Only the signed-in account's own email, so this can't be used to send alerts to strangers.
+        email = (user.get("email") or "").strip().lower()
+        full_name = user.get("full_name") or payload.get("fullName") or payload.get("name")
         product = payload.get("product") or payload.get("sourceApp") or "Smart Ease Photobook Designer"
         device = payload.get("deviceHostname") or payload.get("device_hostname") or "Desktop PC"
         auth_method = payload.get("authMethod") or payload.get("auth_method") or "email"
         ip = payload.get("ipAddress") or payload.get("ip_address") or "127.0.0.1"
-        user_id = payload.get("userId") or payload.get("user_id")
+        user_id = user["id"]
 
         if not email:
             raise HTTPException(status_code=400, detail="User email is required.")
@@ -2258,7 +2069,7 @@ async def api_record_login(payload: Dict[str, Any] = Body(...)):
             "message": "Login event processed with graceful fallback"
         }
 
-@router.get("/logins/recent")
+@router.get("/logins/recent", dependencies=ADMIN)
 async def api_get_recent_logins(limit: int = Query(default=30)):
     """
     Returns the real-time stream of latest logins for Subscription Manager.
@@ -2271,7 +2082,7 @@ async def api_get_recent_logins(limit: int = Query(default=30)):
         "logins": logins
     }
 
-@router.get("/users/{user_id}/logins")
+@router.get("/users/{user_id}/logins", dependencies=ADMIN)
 async def api_get_user_logins(user_id: str, limit: int = Query(default=20)):
     """
     Returns the login history for a specific customer.
