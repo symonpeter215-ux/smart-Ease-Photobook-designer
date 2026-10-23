@@ -754,6 +754,13 @@ def migrate_user_auth_columns(conn: sqlite3.Connection):
         if "avatar_url" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN avatar_url TEXT")
 
+    # Card payments buy several months at once; the paid access length is stored on the transaction.
+    cursor.execute("PRAGMA table_info(transactions)")
+    tx_cols = {row["name"] for row in cursor.fetchall()}
+    if "access_days" not in tx_cols:
+        with conn:
+            conn.execute("ALTER TABLE transactions ADD COLUMN access_days INTEGER")
+
 def record_presence_heartbeat(
     account_id: str,
     product: str = "photobook",

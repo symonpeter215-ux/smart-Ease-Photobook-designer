@@ -13,10 +13,11 @@ Implements all requirements for:
 import csv
 import io
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Body, Response, Depends, Request
+from fastapi import APIRouter, HTTPException, Query, Body, Response, Depends, Request, Header
 from fastapi.responses import StreamingResponse
 
 from database import (
@@ -37,6 +38,23 @@ router = APIRouter(prefix="/api/v1")
 
 # Every admin-console endpoint takes this dependency; customer endpoints use require_user.
 ADMIN = [Depends(require_admin)]
+
+# Card payment choices per package (LivePay cards need at least CARD_MIN_USD per payment).
+# Each month paid gives 30 days of access. Lifetime packages are a single one-time price.
+PLAN_OPTIONS = {
+    "pkg_bundle": [(4, 10.00), (6, 18.00), (12, 36.00)],
+    "pkg_photobook": [(5, 12.00), (6, 14.70), (12, 29.40)],
+    "pkg_ease_select": [(5, 12.00), (6, 14.70), (12, 29.40)],
+}
+PLAN_SORT_ORDER = {"pkg_bundle": 0, "pkg_photobook": 1, "pkg_ease_select": 2, "pkg_lifetime": 3}
+DAYS_PER_MONTH = 30
+CARD_MIN_USD = float(os.environ.get("LIVEPAY_CARD_MIN_USD") or 10)
+
+
+def plan_options(pkg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if pkg.get("billing_interval") == "lifetime" or pkg.get("billing_type") == "one_time":
+        return [{"months": None, "price": fmt_money(pkg["price"]), "label": "Lifetime"}]
+    return [{"months": m, "price": p, "label": f"{m} months"} for m, p in PLAN_OPTIONS.get(pkg["id"], [])]
 
 # Helper to format currency
 def fmt_money(val: float) -> float:
@@ -701,7 +719,14 @@ async def create_user(payload: Dict[str, Any] = Body(...)):
 # ==========================================
 
 @router.get("/packages")
-async def get_packages():
+async def get_packages(authorization: Optional[str] = Header(default=None)):
+    # Public (the apps show plans); sales figures only for admins.
+    try:
+        await require_admin(authorization)
+        is_admin = True
+    except HTTPException:
+        is_admin = False
+
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -710,6 +735,10 @@ async def get_packages():
 
     for pkg in packages:
         pkg_id = pkg["id"]
+        pkg["options"] = plan_options(pkg)
+        pkg["sort_order"] = PLAN_SORT_ORDER.get(pkg_id, 99)
+        if not is_admin:
+            continue
         # Count customers who purchased this package
         cursor.execute("""
             SELECT COUNT(DISTINCT user_id) as customer_count
@@ -1407,7 +1436,8 @@ def activate_paid_license(conn, tx_ref: str, paid_amount: Optional[float], paid_
             UPDATE transactions SET payment_status = 'Verified', is_verified = 1, notes = ?
             WHERE transaction_reference = ? AND is_verified = 0
         """, (f"Verified by LivePay ({source})", tx_ref))
-    grant_subscription(conn, txn["user_id"], dict(pkg_row), None, tx_ref, float(txn["amount"]), "LivePay Card", source)
+    paid_days = txn["access_days"] if "access_days" in txn.keys() else None
+    grant_subscription(conn, txn["user_id"], dict(pkg_row), paid_days, tx_ref, float(txn["amount"]), "LivePay Card", source)
     recalculate_all_subscription_statuses(conn)  # also syncs to MongoDB
     return True
 
@@ -1428,7 +1458,22 @@ async def card_checkout(payload: Dict[str, Any] = Body(...), user: Dict[str, Any
     cursor = conn.cursor()
     try:
         pkg = _get_active_package(cursor, payload.get("package_id") or payload.get("packageId") or "")
-        amount = fmt_money(pkg["price"])
+        options = plan_options(pkg)
+        if options and options[0]["months"] is None:
+            option = options[0]  # lifetime
+        else:
+            try:
+                months = int(payload.get("months") or 0)
+            except (TypeError, ValueError):
+                months = 0
+            option = next((o for o in options if o["months"] == months), None)
+            if not option:
+                choices = ", ".join(str(o["months"]) for o in options) or "none"
+                raise HTTPException(status_code=400, detail=f"Please choose how many months to pay for ({choices}).")
+        amount = fmt_money(option["price"])
+        if amount < CARD_MIN_USD:
+            raise HTTPException(status_code=400, detail=f"Card payments must be at least USD {CARD_MIN_USD:.2f}.")
+        access_days = None if option["months"] is None else option["months"] * DAYS_PER_MONTH
         email = user.get("email") or ""
         if not email:
             raise HTTPException(status_code=400, detail="Your account needs an email address before paying.")
@@ -1440,18 +1485,19 @@ async def card_checkout(payload: Dict[str, Any] = Body(...), user: Dict[str, Any
                 INSERT INTO transactions (
                     id, transaction_date, user_id, package_id, product_or_package,
                     amount, refund_amount, fee_amount, net_amount, currency,
-                    payment_status, payment_provider, transaction_reference, is_verified, notes, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 0.0, 0.0, ?, 'USD', 'Pending', 'LivePay Card', ?, 0, ?, ?)
+                    payment_status, payment_provider, transaction_reference, is_verified, notes, created_at,
+                    access_days
+                ) VALUES (?, ?, ?, ?, ?, ?, 0.0, 0.0, ?, 'USD', 'Pending', 'LivePay Card', ?, 0, ?, ?, ?)
             """, (
                 f"TXN-{uuid.uuid4().hex[:8].upper()}", now_iso, user["id"], pkg["id"], pkg["name"],
-                amount, amount, tx_ref, "Card checkout started", now_iso,
+                amount, amount, tx_ref, f"Card checkout started ({option['label']})", now_iso, access_days,
             ))
         sync_sqlite_to_mongo(conn)
 
         try:
             checkout = await livepay_create_card_checkout(
                 reference=tx_ref, amount=amount, email=email,
-                description=f"Smart Ease: {pkg['name']}",
+                description=f"Smart Ease: {pkg['name']} ({option['label']})",
                 return_url=PAYMENT_RETURN_URL or None,
             )
         except HTTPException as e:
@@ -1464,6 +1510,7 @@ async def card_checkout(payload: Dict[str, Any] = Body(...), user: Dict[str, Any
             "checkout_url": checkout["checkout_url"],
             "packageId": pkg["id"],
             "packageName": pkg["name"],
+            "months": option["months"],
             "amount": amount,
             "currency": "USD",
         }
