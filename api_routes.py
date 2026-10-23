@@ -1935,6 +1935,48 @@ async def login_auth_user(payload: Dict[str, Any] = Body(...)):
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 
+
+@router.get("/auth/google/config")
+async def google_auth_config():
+    """Public: lets the desktop apps start Google sign-in without shipping the client ID."""
+    return {"enabled": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET), "clientId": GOOGLE_CLIENT_ID}
+
+
+@router.post("/auth/google/exchange")
+async def google_auth_exchange(payload: Dict[str, Any] = Body(...)):
+    """
+    Desktop Google sign-in: the app opened Google's consent page with PKCE and a loopback redirect,
+    received the authorization code, and sends it here. The client secret never leaves the server.
+    """
+    if not (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET):
+        raise HTTPException(status_code=503, detail="Google sign-in is not set up on the server yet.")
+    code = payload.get("code") or ""
+    verifier = payload.get("codeVerifier") or payload.get("code_verifier") or ""
+    redirect_uri = payload.get("redirectUri") or payload.get("redirect_uri") or ""
+    if not code or not verifier:
+        raise HTTPException(status_code=400, detail="Missing Google sign-in code.")
+    if not redirect_uri.startswith(("http://127.0.0.1:", "http://localhost:")):
+        raise HTTPException(status_code=400, detail="Invalid redirect address.")
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post("https://oauth2.googleapis.com/token", data={
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+            "code_verifier": verifier,
+        })
+    if resp.status_code != 200 or not resp.json().get("id_token"):
+        print(f"[GoogleAuth] token exchange failed: {resp.status_code} {resp.text[:300]}")
+        raise HTTPException(status_code=401, detail="Google sign-in failed. Please try again.")
+
+    return await google_auth_user({
+        "idToken": resp.json()["id_token"],
+        "sourceApp": payload.get("sourceApp") or "Photobook",
+        "deviceHostname": payload.get("deviceHostname"),
+    })
+
 async def _verify_google_id_token(id_token: str) -> Dict[str, Any]:
     """Asks Google to validate the ID token; identity fields come from Google, never from the client."""
     if not id_token:
