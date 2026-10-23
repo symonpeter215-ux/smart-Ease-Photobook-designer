@@ -1932,8 +1932,9 @@ async def login_auth_user(payload: Dict[str, Any] = Body(...)):
     finally:
         conn.close()
 
-GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
-GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+# Values copied from Google's console often pick up line breaks; IDs and secrets never contain whitespace.
+GOOGLE_CLIENT_ID = "".join(os.environ.get("GOOGLE_CLIENT_ID", "").split())
+GOOGLE_CLIENT_SECRET = "".join(os.environ.get("GOOGLE_CLIENT_SECRET", "").split())
 
 
 @router.get("/auth/google/config")
