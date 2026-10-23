@@ -1,0 +1,17 @@
+{
+  "name": "Smart Ease Admin",
+  "short_name": "SE Admin",
+  "description": "Smart Ease Subscription & Revenue Manager",
+  "id": "/static/index.html",
+  "start_url": "/static/index.html",
+  "scope": "/static/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b0f19",
+  "theme_color": "#0b0f19",
+  "icons": [
+    { "src": "/static/icons/admin-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/admin-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/admin-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

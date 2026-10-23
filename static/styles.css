@@ -1198,3 +1198,9 @@ section.tab-panel > .card { margin-bottom: 20px; }
   .filter-item { width: 100%; }
   .filter-item .select-control, .filter-item .date-control { flex: 1 1 auto; width: 100%; }
 }
+
+/* Installed app on phones: keep content clear of the notch / status bar */
+@supports (padding: env(safe-area-inset-top)) {
+  .app-header { padding-top: max(10px, env(safe-area-inset-top)); }
+  .main-body { padding-bottom: max(40px, env(safe-area-inset-bottom)); }
+}

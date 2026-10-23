@@ -92,6 +92,13 @@ function showAdminLogin(message) {
   });
 }
 
+// Installable app: register the service worker (served from /static/, so it covers the console only).
+if ('serviceWorker' in navigator && window.location.protocol === 'https:') {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/static/sw.js', { scope: '/static/' }).catch(() => {});
+  });
+}
+
 async function adminSignOut() {
   try { await fetch('/api/v1/auth/logout', { method: 'POST' }); } catch (_) {}
   try { localStorage.removeItem(ADMIN_TOKEN_KEY); } catch (_) {}
