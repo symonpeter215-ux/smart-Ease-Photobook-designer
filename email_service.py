@@ -83,13 +83,42 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </html>
 """
 
+# Render's free plan blocks outbound SMTP ports, so on Render mail goes through Brevo's HTTPS API.
+BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")
+
 def is_smtp_configured() -> bool:
-    return bool(SMTP_HOST and SMTP_USER and SMTP_PASS)
+    """True when any email channel is set up (Brevo API or SMTP)."""
+    return bool(BREVO_API_KEY and FROM_EMAIL) or bool(SMTP_HOST and SMTP_USER and SMTP_PASS)
+
+def _send_via_brevo(to: str, subject: str, plain_text: str, html_body: str) -> bool:
+    import httpx
+    try:
+        resp = httpx.post(
+            "https://api.brevo.com/v3/smtp/email",
+            headers={"api-key": BREVO_API_KEY, "accept": "application/json", "content-type": "application/json"},
+            json={
+                "sender": {"name": FROM_NAME, "email": FROM_EMAIL},
+                "to": [{"email": to}],
+                "subject": subject,
+                "htmlContent": html_body,
+                "textContent": plain_text,
+            },
+            timeout=15.0,
+        )
+        if resp.status_code >= 400:
+            print(f"[Email] Brevo rejected mail to {to}: {resp.status_code} {resp.text[:300]}")
+            return False
+        return True
+    except Exception as e:
+        print(f"[Email] Brevo delivery error to {to}: {e}")
+        return False
 
 def send_email(to: str, subject: str, plain_text: str, html_body: str) -> bool:
-    """Sends one email synchronously. Returns False (and logs) if SMTP isn't set up or delivery fails."""
+    """Sends one email synchronously. Returns False (and logs) if email isn't set up or delivery fails."""
+    if BREVO_API_KEY and FROM_EMAIL:
+        return _send_via_brevo(to, subject, plain_text, html_body)
     if not is_smtp_configured():
-        print(f"[Email] SMTP not configured; could not send '{subject}' to {to}")
+        print(f"[Email] Email not configured; could not send '{subject}' to {to}")
         return False
     try:
         msg = MIMEMultipart("alternative")
@@ -143,9 +172,16 @@ def dispatch_login_security_email(
     time_str = login_time or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     name_str = full_name or email.split("@")[0].capitalize()
 
-    # If SMTP is configured, send the actual email in background thread
+    # If email is configured, send the actual email in background thread
     if is_smtp_configured():
         def _send():
+            if BREVO_API_KEY:
+                plain = f"Security Notice: New sign-in detected for {email} into {product} on {device_hostname} at {time_str}. If this was not you, please contact support."
+                html = HTML_TEMPLATE.replace("{{FULL_NAME}}", name_str).replace("{{EMAIL}}", email) \
+                    .replace("{{PRODUCT}}", product).replace("{{DEVICE_HOSTNAME}}", device_hostname) \
+                    .replace("{{AUTH_METHOD}}", auth_method).replace("{{LOGIN_TIME}}", time_str)
+                _send_via_brevo(email, f"Security Alert: New Sign-in to {product}", plain, html)
+                return
             try:
                 msg = MIMEMultipart("alternative")
                 msg["Subject"] = f"Security Alert: New Sign-in to {product}"
