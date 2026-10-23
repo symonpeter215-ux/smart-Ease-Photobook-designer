@@ -938,8 +938,33 @@ async def cancel_subscription(sub_id: str):
             SET cancellation_date = ?, status = 'Cancelled', updated_at = ?
             WHERE id = ?
         """, (now_str, now_str, sub_id))
+    recalculate_all_subscription_statuses(conn)  # also saves to MongoDB
     conn.close()
     return {"status": "success", "message": "Subscription cancelled"}
+
+
+@router.post("/users/{user_id}/end-pass", dependencies=ADMIN)
+async def end_user_pass(user_id: str):
+    """Admin: stop all of a customer's current access now (paid or granted).
+    The customer's app locks the next time it checks in online."""
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_db_connection()
+    try:
+        if not conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="Customer not found")
+        with conn:
+            cur = conn.execute("""
+                UPDATE subscriptions
+                SET cancellation_date = ?, status = 'Cancelled', updated_at = ?
+                WHERE user_id = ? AND payment_status = 'Verified'
+                  AND status IN ('Active', 'Expiring Soon', 'Lifetime')
+            """, (now_str, now_str, user_id))
+            ended = cur.rowcount
+            conn.execute("UPDATE users SET package_name = 'No active license', updated_at = ? WHERE id = ?", (now_str, user_id))
+        recalculate_all_subscription_statuses(conn)  # also saves to MongoDB
+        return {"status": "success", "ended": ended}
+    finally:
+        conn.close()
 
 # ==========================================
 # 5. DAILY AND MONTHLY EARNINGS ENDPOINTS

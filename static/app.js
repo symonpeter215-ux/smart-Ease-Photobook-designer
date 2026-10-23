@@ -533,8 +533,32 @@ async function openUserDetail(userId) {
     document.getElementById('mudUserName').textContent = u.full_name;
     document.getElementById('mudAccountBadge').textContent = `Account ID: ${u.smart_ease_account_id} | ${u.id}`;
 
+    if (!state.packages || !state.packages.length) {
+      try { const pr = await fetch('/api/v1/packages'); if (pr.ok) state.packages = await pr.json(); } catch (_) {}
+    }
+    const activePass = (data.subscriptions || []).filter(s => s.payment_status === 'Verified' && ['Active', 'Expiring Soon', 'Lifetime'].includes(s.status));
+    const passSummary = activePass.length
+      ? activePass.map(s => `<strong>${escapeHtml(s.product_or_package)}</strong> &mdash; ${s.expiry_date ? 'until ' + escapeHtml(String(s.expiry_date).slice(0, 10)) : 'lifetime'}`).join('<br>')
+      : '<span style="color:#f87171;">No active pass &mdash; the customer\'s app is locked.</span>';
+    const passPkgOptions = [...(state.packages || [])]
+      .sort((a, b) => (a.sort_order ?? 99) - (b.sort_order ?? 99))
+      .map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}${(p.billing_interval === 'lifetime' || p.billing_type === 'one_time') ? ' (lifetime)' : ''}</option>`).join('');
+
     const content = document.getElementById('mudContent');
     content.innerHTML = `
+      <div class="pass-panel">
+        <div class="pass-status">
+          <div class="pass-label">Current pass</div>
+          <div>${passSummary}</div>
+        </div>
+        <div class="pass-actions">
+          <select id="passPkg" class="select-control">${passPkgOptions}</select>
+          <input id="passDays" type="number" min="1" max="3650" value="30" class="text-input" style="width:90px;" title="Days of access">
+          <span class="text-hint">days</span>
+          <button class="btn btn-primary btn-sm" onclick="giveUserPass('${escapeHtml(u.id)}')">Give pass</button>
+          <button class="btn btn-danger btn-sm" onclick="endUserPass('${escapeHtml(u.id)}', '${escapeHtml(u.full_name)}')" ${activePass.length ? '' : 'disabled'}>End pass</button>
+        </div>
+      </div>
       <div class="user-detail-grid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-bottom: 20px;">
         <div class="info-box" style="background:rgba(0,0,0,0.2); padding:14px; border-radius:8px; border:1px solid rgba(255,255,255,0.08);">
           <div style="font-size:0.75rem; color:#94a3b8; text-transform:uppercase;">Customer Profile</div>
@@ -657,6 +681,43 @@ async function openUserDetail(userId) {
     document.getElementById('modalUserDetail').classList.add('open');
   } catch (err) {
     showToast('Failed to load user details: ' + err.message, 'error');
+  }
+}
+
+// Admin pass controls (customer detail window)
+async function giveUserPass(userId) {
+  const pkgId = document.getElementById('passPkg')?.value;
+  const pkg = (state.packages || []).find(p => p.id === pkgId) || {};
+  const lifetime = pkg.billing_interval === 'lifetime' || pkg.billing_type === 'one_time';
+  const days = parseInt(document.getElementById('passDays')?.value, 10);
+  if (!lifetime && !(days >= 1)) return showToast('Enter how many days the pass should last.', 'error');
+  try {
+    const res = await fetch('/api/v1/subscriptions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, package_id: pkgId, days: lifetime ? null : days, payment_provider: 'Admin Grant' })
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Could not give the pass');
+    showToast(lifetime ? 'Lifetime pass given.' : `Pass given for ${days} days.`, 'success');
+    await loadUsersData();
+    await openUserDetail(userId);
+    loadDashboardData();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function endUserPass(userId, name) {
+  if (!confirm(`End ${name}'s pass now? Their app will lock the next time it goes online.`)) return;
+  try {
+    const res = await fetch(`/api/v1/users/${encodeURIComponent(userId)}/end-pass`, { method: 'POST' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Could not end the pass');
+    showToast('Pass ended.', 'success');
+    await loadUsersData();
+    await openUserDetail(userId);
+    loadDashboardData();
+  } catch (err) {
+    showToast(err.message, 'error');
   }
 }
 
