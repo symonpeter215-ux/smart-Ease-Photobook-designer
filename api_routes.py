@@ -40,21 +40,48 @@ router = APIRouter(prefix="/api/v1")
 ADMIN = [Depends(require_admin)]
 
 # Card payment choices per package (LivePay cards need at least CARD_MIN_USD per payment).
-# Each month paid gives 30 days of access. Lifetime packages are a single one-time price.
+# Each month paid gives 30 days of access. Packages without options (old Photobook + Ease Select
+# bundle, Lifetime) are no longer sold; existing holders keep their access.
 PLAN_OPTIONS = {
-    "pkg_bundle": [(4, 10.00), (6, 18.00), (12, 36.00)],
-    "pkg_photobook": [(5, 12.00), (6, 14.70), (12, 29.40)],
-    "pkg_ease_select": [(5, 12.00), (6, 14.70), (12, 29.40)],
+    "pkg_all_in_one": [(1, 9.13), (6, 45.65), (12, 91.27)],
+    "pkg_photobook": [(1, 2.28), (6, 11.41), (12, 22.82)],
+    "pkg_ease_select": [(1, 2.28), (6, 11.41), (12, 22.82)],
+    "pkg_retouch_academy": [(1, 6.85), (6, 34.23), (12, 61.61)],
 }
-PLAN_SORT_ORDER = {"pkg_bundle": 0, "pkg_photobook": 1, "pkg_ease_select": 2}
+PLAN_SORT_ORDER = {"pkg_all_in_one": 0, "pkg_photobook": 1, "pkg_ease_select": 2, "pkg_retouch_academy": 3}
 DAYS_PER_MONTH = 30
-CARD_MIN_USD = float(os.environ.get("LIVEPAY_CARD_MIN_USD") or 10)
+CARD_MIN_USD = float(os.environ.get("LIVEPAY_CARD_MIN_USD") or 1)
+
+# Ease Creative Suite apps and which package access values unlock them.
+PRODUCTS = ("photobook", "ease_select", "retouch_academy")
+ACCESS_COVERS = {
+    "all": set(PRODUCTS),
+    "both": {"photobook", "ease_select"},  # old bundle / lifetime holders
+    "photobook": {"photobook"},
+    "ease_select": {"ease_select"},
+    "retouch_academy": {"retouch_academy"},
+}
+
+
+def normalize_product(product: Optional[str]) -> str:
+    p = (product or "photobook").strip().lower().replace("-", "_").replace(" ", "_")
+    if p in ("select", "ease_select", "easeselect"):
+        return "ease_select"
+    if p in ("retouch", "retouching", "retouch_academy", "retouching_academy", "ease_retouching_academy", "academy"):
+        return "retouch_academy"
+    return "photobook"
+
+
+def access_includes(product_access: Optional[str], product: str) -> bool:
+    return product in ACCESS_COVERS.get((product_access or "").lower(), set())
 
 
 def plan_options(pkg: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Choices customers can pay for. Packages without options (e.g. Lifetime) aren't sold;
+    """Choices customers can pay for. Packages without options aren't sold;
     admins can still grant them from the console, and existing holders keep their access."""
-    return [{"months": m, "price": p, "label": f"{m} months"} for m, p in PLAN_OPTIONS.get(pkg["id"], [])]
+    def label(m):
+        return "1 month" if m == 1 else ("1 year" if m == 12 else f"{m} months")
+    return [{"months": m, "price": p, "label": label(m)} for m, p in PLAN_OPTIONS.get(pkg["id"], [])]
 
 # Helper to format currency
 def fmt_money(val: float) -> float:
@@ -392,8 +419,22 @@ async def get_users(
         has_bundle = any(s["package_id"] == "pkg_bundle" for s in active_subs)
         has_ind_pb = any(s["package_id"] == "pkg_photobook" for s in active_subs)
         has_ind_es = any(s["package_id"] == "pkg_ease_select" for s in active_subs)
+        has_all_in_one = any(s["package_id"] == "pkg_all_in_one" for s in active_subs)
+        has_retouch = any(s["package_id"] == "pkg_retouch_academy" for s in active_subs)
 
-        if has_lifetime:
+        if has_all_in_one:
+            u["app_access_code"] = "all_in_one"
+            u["app_access_label"] = "All Apps (All-in-One)"
+            u["app_access_category"] = "both"
+            u["app_access_badge"] = "badge-indigo"
+            u["product_owned"] = "All Ease Creative Suite apps"
+        elif has_retouch and not (has_lifetime or has_bundle or has_ind_pb or has_ind_es):
+            u["app_access_code"] = "independent_retouch_academy"
+            u["app_access_label"] = "Retouching Academy (Independent Sub)"
+            u["app_access_category"] = "independent"
+            u["app_access_badge"] = "badge-purple"
+            u["product_owned"] = "Ease Retouching Academy"
+        elif has_lifetime:
             u["app_access_code"] = "both_lifetime"
             u["app_access_label"] = "Both Apps (Lifetime Pro)"
             u["app_access_category"] = "both"
@@ -437,6 +478,16 @@ async def get_users(
                     u["app_access_label"] = "Ease Select (Independent - Expired)"
                     u["app_access_category"] = "independent"
                     u["app_access_badge"] = "badge-danger"
+                elif pkg == "pkg_retouch_academy":
+                    u["app_access_code"] = "independent_retouch_academy"
+                    u["app_access_label"] = "Retouching Academy (Expired)"
+                    u["app_access_category"] = "independent"
+                    u["app_access_badge"] = "badge-danger"
+                elif pkg == "pkg_all_in_one":
+                    u["app_access_code"] = "all_in_one"
+                    u["app_access_label"] = "All Apps (Expired)"
+                    u["app_access_category"] = "both"
+                    u["app_access_badge"] = "badge-danger"
                 else:
                     u["app_access_code"] = "both_bundle"
                     u["app_access_label"] = "Both Apps (Expired)"
@@ -447,6 +498,10 @@ async def get_users(
                 u["app_access_label"] = "Free / Unlicensed"
                 u["app_access_category"] = "none"
                 u["app_access_badge"] = "badge-neutral"
+
+        # Retouching Academy bought alongside Photobook / Ease Select subscriptions
+        if has_retouch and u.get("app_access_code") not in ("all_in_one", "independent_retouch_academy"):
+            u["app_access_label"] = f'{u["app_access_label"]} + Retouching Academy'
 
         # Determine Live Presence & Connection Mode
         now_dt = datetime.now(timezone.utc)
@@ -1240,7 +1295,7 @@ async def client_verify_license(payload: Dict[str, Any] = Body(default={}), user
     The account comes from the session token, never from the request body.
     """
     product = (payload.get("product") or "photobook").lower()
-    product = "ease_select" if product in ("select", "ease_select") else "photobook"
+    product = normalize_product(product)
     lic = get_license_status(user["id"], user.get("email") or "", product=product)
 
     try:
@@ -1685,10 +1740,9 @@ def get_license_status(user_id: str, email: str, conn: Optional[Any] = None, pro
     if should_close:
         conn.close()
 
-    product = (product or "photobook").lower()
+    product = normalize_product(product)
     for sub in rows:
-        access = (sub["product_access"] or "").lower()
-        if access == "both" or access == product or (product == "select" and access == "ease_select"):
+        if access_includes(sub["product_access"], product):
             return {
                 "active": True,
                 "status": sub["status"],
@@ -2224,7 +2278,7 @@ async def auth_me(product: str = Query(default="photobook"), device: Optional[st
                   user: Dict[str, Any] = Depends(require_user)):
     """Current account and license. The desktop apps call this on start-up and periodically,
     which also marks the customer as online in the admin console."""
-    product = "ease_select" if product in ("select", "ease_select") else "photobook"
+    product = normalize_product(product)
     try:
         record_presence_heartbeat(account_id=user["smart_ease_account_id"], product=product,
                                   mode="online", device_hostname=device)

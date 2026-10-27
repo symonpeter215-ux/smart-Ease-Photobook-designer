@@ -184,11 +184,45 @@ def init_db():
     sync_mongo_to_sqlite(conn)
     # Remove the old demo customers (and anything attached to them) everywhere
     purge_demo_data(conn)
+    # Make sure the packages currently on sale exist with current prices
+    ensure_current_packages(conn)
     # Auto-recalculate subscription statuses
     recalculate_all_subscription_statuses(conn)
     # Ensure MongoDB cloud has all latest records
     sync_sqlite_to_mongo(conn)
     conn.close()
+
+# Packages on sale (Ease Creative Suite). product_access: a single product id, 'both'
+# (Photobook + Ease Select, old bundle) or 'all' (every Ease Creative Suite app).
+CURRENT_PACKAGES = [
+    ("pkg_all_in_one", "All-in-One (Photobook + Ease Select + Retouching Academy)", 9.13, "all",
+     "One subscription for Smart Ease Photobook Studio, Ease Select and Ease Retouching Academy."),
+    ("pkg_photobook", "Smart Ease Photobook Studio", 2.28, "photobook",
+     "Subscription for Smart Ease Photobook Studio."),
+    ("pkg_ease_select", "Ease Select", 2.28, "ease_select",
+     "Subscription for Ease Select."),
+    ("pkg_retouch_academy", "Ease Retouching Academy", 6.85, "retouch_academy",
+     "Subscription for Ease Retouching Academy."),
+]
+
+
+def ensure_current_packages(conn: sqlite3.Connection):
+    """Adds packages that are missing and keeps the listed 1-month prices current.
+    Existing subscriptions are never touched."""
+    now = datetime.now(timezone.utc).isoformat()
+    with conn:
+        for pkg_id, name, price, access, desc in CURRENT_PACKAGES:
+            row = conn.execute("SELECT id FROM packages WHERE id = ?", (pkg_id,)).fetchone()
+            if row:
+                conn.execute("""UPDATE packages SET name = ?, price = ?, product_access = ?, description = ?,
+                                is_active = 1, updated_at = ? WHERE id = ?""",
+                             (name, price, access, desc, now, pkg_id))
+            else:
+                conn.execute("""INSERT INTO packages (id, name, price, currency, billing_type, billing_interval,
+                                product_access, description, is_active, created_at, updated_at)
+                                VALUES (?, ?, ?, 'USD', 'recurring', 'monthly', ?, ?, 1, ?, ?)""",
+                             (pkg_id, name, price, access, desc, now, now))
+
 
 def seed_initial_packages(conn: sqlite3.Connection):
     cursor = conn.cursor()
