@@ -154,6 +154,20 @@ def send_verification_code(email: str, full_name: str, code: str) -> bool:
   </div></body></html>"""
     return send_email(email, f"Your Smart Ease code: {code}", plain, html)
 
+def send_password_reset_code(email: str, full_name: str, code: str) -> bool:
+    name = full_name or email.split("@")[0].capitalize()
+    plain = (f"Hello {name},\n\nYour Smart Ease password reset code is {code}.\n"
+             "Enter it in the app with your new password. The code expires in 30 minutes.\n\n"
+             "If you didn't ask to reset your password, you can ignore this email; your password stays the same.")
+    html = f"""<!DOCTYPE html><html><body style="font-family:Segoe UI,Arial,sans-serif;background:#0b1120;margin:0;padding:24px;color:#f8fafc;">
+  <div style="max-width:480px;margin:0 auto;background:#0f172a;border:1px solid #1e293b;border-radius:12px;padding:28px;">
+    <h2 style="margin:0 0 12px;font-size:18px;">Reset your password</h2>
+    <p style="color:#cbd5e1;font-size:14px;line-height:1.6;margin:0 0 18px;">Hello <strong>{name}</strong>, enter this code in Smart Ease with your new password:</p>
+    <div style="font-size:32px;letter-spacing:8px;font-weight:700;text-align:center;background:#1e293b;border-radius:8px;padding:16px;color:#38bdf8;">{code}</div>
+    <p style="color:#94a3b8;font-size:12px;line-height:1.6;margin:18px 0 0;">The code expires in 30 minutes. If you didn't ask for this, ignore this email; your password stays the same.</p>
+  </div></body></html>"""
+    return send_email(email, f"Your Smart Ease password reset code: {code}", plain, html)
+
 def dispatch_login_security_email(
     email: str,
     full_name: str,

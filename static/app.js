@@ -564,6 +564,7 @@ async function openUserDetail(userId) {
           <span class="text-hint">days</span>
           <button class="btn btn-primary btn-sm" onclick="giveUserPass('${escapeHtml(u.id)}')">Give pass</button>
           <button class="btn btn-danger btn-sm" onclick="endUserPass('${escapeHtml(u.id)}', '${escapeHtml(u.full_name)}')" ${activePass.length ? '' : 'disabled'}>End pass</button>
+          <button class="btn btn-secondary btn-sm" onclick="resetUserPassword('${escapeHtml(u.id)}', '${escapeHtml(u.full_name)}')" title="Give a forgotten-password customer a temporary password">Reset password</button>
         </div>
       </div>
       <div class="user-detail-grid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-bottom: 20px;">
@@ -723,6 +724,20 @@ async function endUserPass(userId, name) {
     await loadUsersData();
     await openUserDetail(userId);
     loadDashboardData();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function resetUserPassword(userId, name) {
+  if (!confirm(`Give ${name} a new temporary password? Their old password stops working and they are signed out on every device.`)) return;
+  try {
+    const res = await fetch(`/api/v1/users/${encodeURIComponent(userId)}/reset-password`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || 'Could not reset the password');
+    prompt(`Temporary password for ${data.email || name}. Send it to the customer; they sign in with it:`, data.temporaryPassword);
   } catch (err) {
     showToast(err.message, 'error');
   }

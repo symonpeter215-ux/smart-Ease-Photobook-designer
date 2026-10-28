@@ -125,6 +125,18 @@ def delete_session(token: str):
         conn.close()
 
 
+def delete_user_sessions(user_id: str):
+    """Signs the account out everywhere (used after a password reset)."""
+    db = get_mongo_db()
+    if db is not None:
+        db["sessions"].delete_many({"user_id": user_id})
+    conn = get_db_connection()
+    _ensure_sqlite_sessions(conn)
+    with conn:
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+    conn.close()
+
+
 def _bearer(authorization: Optional[str]) -> str:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Please sign in to continue.")

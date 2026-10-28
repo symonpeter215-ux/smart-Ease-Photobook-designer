@@ -30,7 +30,7 @@ from app_identity import (
     ping_render_server, sync_render_cloud_data
 )
 from security import (
-    require_user, require_admin, create_session, delete_session,
+    require_user, require_admin, create_session, delete_session, delete_user_sessions,
     verify_livepay_signature, livepay_create_card_checkout, livepay_transaction_status,
 )
 
@@ -1796,8 +1796,9 @@ def _mongo_set_user(user_id: str, fields: Dict[str, Any]):
         print(f"[MongoDB] user update error: {e}")
 
 
-def issue_email_code(conn, user_id: str, email: str, full_name: str) -> bool:
-    """Creates a fresh 6-digit code for the user and emails it. Returns whether it was sent."""
+def issue_email_code(conn, user_id: str, email: str, full_name: str, purpose: str = "verify") -> bool:
+    """Creates a fresh 6-digit code for the user and emails it. Returns whether it was sent.
+    The same code proves the user owns the email, so it serves both verification and password reset."""
     import secrets
     code = f"{secrets.randbelow(1000000):06d}"
     now = datetime.now(timezone.utc)
@@ -1811,8 +1812,29 @@ def issue_email_code(conn, user_id: str, email: str, full_name: str) -> bool:
                      (fields["email_code_hash"], fields["email_code_expires"], fields["email_code_sent_at"], user_id))
     _mongo_set_user(user_id, fields)
     _email_code_attempts.pop(user_id, None)
+    if purpose == "reset":
+        from email_service import send_password_reset_code
+        return send_password_reset_code(email, full_name, code)
     from email_service import send_verification_code
     return send_verification_code(email, full_name, code)
+
+
+def _hash_password(password: str):
+    import hashlib
+    salt = os.urandom(16).hex()
+    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 100000).hex(), salt
+
+
+def _set_user_password(conn, user_id: str, password: str, extra: Optional[Dict[str, Any]] = None):
+    """Stores a new password and signs the account out on every device."""
+    pwhash, salt = _hash_password(password)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    fields = {"password_hash": pwhash, "password_salt": salt, "updated_at": now_iso, **(extra or {})}
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    with conn:
+        conn.execute(f"UPDATE users SET {cols} WHERE id = ?", (*fields.values(), user_id))
+    _mongo_set_user(user_id, fields)
+    delete_user_sessions(user_id)
 
 
 def _auth_response(user_id: str, email: str, name: str, auth_provider: str, conn, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -2340,6 +2362,98 @@ async def auth_resend_verification(user: Dict[str, Any] = Depends(require_user))
     if not sent:
         raise HTTPException(status_code=502, detail="We couldn't send the email right now. Please try again shortly.")
     return {"success": True, "sent": True}
+
+
+def _find_user_by_email(conn, email: str) -> Optional[Dict[str, Any]]:
+    row = conn.execute("SELECT * FROM users WHERE LOWER(email) = ?", (email,)).fetchone()
+    if row:
+        return dict(row)
+    db = get_mongo_db()
+    if db is not None:
+        try:
+            doc = db["users"].find_one({"email": email})
+            if doc:
+                doc = dict(doc)
+                doc["id"] = doc.get("id") or doc.get("_id")
+                return doc
+        except Exception as e:
+            print(f"[MongoDB] user lookup error: {e}")
+    return None
+
+
+@router.post("/auth/forgot-password")
+async def auth_forgot_password(payload: Dict[str, Any] = Body(...)):
+    """Emails a reset code. The answer is the same whether or not the account exists,
+    so this can't be used to find out who has an account."""
+    email = (payload.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Please enter a valid email address.")
+    if not email_verification_required():
+        raise HTTPException(status_code=503, detail="Password reset by email isn't available yet. "
+                            "If this is a Gmail address, use 'Continue with Google', or contact Smart Ease support to reset your password.")
+    generic = {"success": True, "message": "If an account exists for this email, a reset code has been sent. Check your inbox and spam folder."}
+    conn = get_db_connection()
+    try:
+        user = _find_user_by_email(conn, email)
+        if not user:
+            return generic
+        sent_at = user.get("email_code_sent_at")
+        if sent_at and (datetime.now(timezone.utc) - datetime.fromisoformat(sent_at)).total_seconds() < EMAIL_CODE_RESEND_SECONDS:
+            raise HTTPException(status_code=429, detail="Please wait a minute before requesting another code.")
+        if not issue_email_code(conn, user["id"], email, user.get("full_name") or "", purpose="reset"):
+            raise HTTPException(status_code=502, detail="We couldn't send the email right now. Please try again shortly.")
+        return generic
+    finally:
+        conn.close()
+
+
+@router.post("/auth/reset-password")
+async def auth_reset_password(payload: Dict[str, Any] = Body(...)):
+    email = (payload.get("email") or "").strip().lower()
+    code = str(payload.get("code") or "").strip()
+    password = payload.get("password") or payload.get("newPassword") or ""
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters long.")
+    bad_code = HTTPException(status_code=400, detail="That code is not correct or has expired. Please request a new code.")
+    conn = get_db_connection()
+    try:
+        user = _find_user_by_email(conn, email) if email else None
+        if not user or not code:
+            raise bad_code
+        uid = user["id"]
+        if _email_code_attempts.get(uid, 0) >= EMAIL_CODE_MAX_ATTEMPTS:
+            raise HTTPException(status_code=429, detail="Too many wrong codes. Please request a new code.")
+        expires = user.get("email_code_expires")
+        import hmac
+        if (not user.get("email_code_hash") or not expires
+                or datetime.fromisoformat(expires) < datetime.now(timezone.utc)
+                or not hmac.compare_digest(_code_hash(uid, code), user["email_code_hash"])):
+            _email_code_attempts[uid] = _email_code_attempts.get(uid, 0) + 1
+            raise bad_code
+        # The code came from their inbox, so the email is confirmed too.
+        _set_user_password(conn, uid, password, {"email_verified": 1, "email_code_hash": None, "email_code_expires": None})
+        _email_code_attempts.pop(uid, None)
+        return {"success": True, "message": "Your password has been changed. Please sign in with your new password."}
+    finally:
+        conn.close()
+
+
+@router.post("/users/{user_id}/reset-password", dependencies=ADMIN)
+async def admin_reset_password(user_id: str, payload: Dict[str, Any] = Body(default={})):
+    """Admin sets a temporary password for a customer who forgot theirs (works without email set up)."""
+    import secrets
+    password = (payload.get("password") or "").strip() or f"SE-{secrets.token_hex(3).upper()}"
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters long.")
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT id, email FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found.")
+        _set_user_password(conn, user_id, password)
+        return {"success": True, "email": row["email"], "temporaryPassword": password}
+    finally:
+        conn.close()
 
 
 @router.post("/auth/logout")
