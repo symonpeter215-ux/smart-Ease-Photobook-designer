@@ -74,6 +74,19 @@
       <!-- TAB 1: DASHBOARD                               -->
       <!-- ============================================== -->
       <section id="tab-dashboard" class="tab-panel active">
+        <!-- Sender for password reset codes -->
+        <div id="gmailCard" class="pass-panel" style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px;">
+          <div style="min-width:0;">
+            <strong>Password reset emails</strong>
+            <div class="text-hint" id="gmailStatusText">Checking…</div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn btn-primary btn-sm" id="btnGmailConnect" onclick="connectGmail()">Connect Gmail</button>
+            <button class="btn btn-secondary btn-sm" id="btnGmailTest" onclick="testGmail()" style="display:none;">Send test email</button>
+            <button class="btn btn-secondary btn-sm" id="btnGmailDisconnect" onclick="disconnectGmail()" style="display:none;">Disconnect</button>
+          </div>
+        </div>
+
         <!-- 8 Summary KPI Cards -->
         <div class="kpi-grid">
           <!-- Card 1: Total Registered Users -->

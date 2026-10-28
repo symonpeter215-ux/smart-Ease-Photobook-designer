@@ -2080,6 +2080,8 @@ async def google_admin_callback(code: str = Query(default=""), state: str = Quer
     console = f"{PUBLIC_BASE_URL}/static/index.html"
     fail = lambda msg: RedirectResponse(f"{console}#admin_error={urllib.parse.quote(msg)}")
     pending = _admin_google_states.pop(state, None)
+    if pending and pending.get("purpose") == "gmail":
+        return await _finish_gmail_connect(code, error, pending, console)
     if error or not code:
         return fail("Google sign-in was cancelled.")
     if not pending:
@@ -2102,6 +2104,82 @@ async def google_admin_callback(code: str = Query(default=""), state: str = Quer
         delete_session(result["token"])
         return fail("This Google account is not an administrator.")
     return RedirectResponse(f"{console}#admin_token={urllib.parse.quote(result['token'])}")
+
+
+# ---------- Admin's Gmail as the sender for password reset codes ----------
+
+@router.get("/admin/gmail/status", dependencies=ADMIN)
+async def gmail_status():
+    import gmail_sender
+    cfg = gmail_sender.load_config(force=True)
+    return {"connected": bool(cfg), "email": (cfg or {}).get("email"), "connectedAt": (cfg or {}).get("connected_at")}
+
+
+@router.post("/admin/gmail/connect", dependencies=ADMIN)
+async def gmail_connect_start():
+    """Returns the Google consent URL for gmail.send; Google returns to /auth/google/callback."""
+    import base64, hashlib, secrets, time, urllib.parse
+    import gmail_sender
+    if not (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET):
+        raise HTTPException(status_code=503, detail="Google sign-in is not set up on the server yet.")
+    verifier = secrets.token_urlsafe(48)
+    state = secrets.token_urlsafe(16)
+    _admin_google_states[state] = {"verifier": verifier, "created": time.time(), "purpose": "gmail"}
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    params = {
+        "client_id": GOOGLE_CLIENT_ID, "redirect_uri": ADMIN_GOOGLE_REDIRECT, "response_type": "code",
+        "scope": f"openid email {gmail_sender.GMAIL_SCOPE}", "code_challenge": challenge,
+        "code_challenge_method": "S256", "state": state,
+        # offline + consent so Google hands out a refresh token every time.
+        "access_type": "offline", "prompt": "consent select_account",
+    }
+    return {"url": "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)}
+
+
+async def _finish_gmail_connect(code: str, error: str, pending: Dict[str, Any], console: str):
+    import urllib.parse
+    import gmail_sender
+    from fastapi.responses import RedirectResponse
+    done = lambda key, msg: RedirectResponse(f"{console}#{key}={urllib.parse.quote(msg)}")
+    if error or not code:
+        return done("gmail_error", "Gmail connection was cancelled.")
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post("https://oauth2.googleapis.com/token", data={
+            "code": code, "client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": ADMIN_GOOGLE_REDIRECT, "grant_type": "authorization_code",
+            "code_verifier": pending["verifier"],
+        })
+    data = resp.json() if resp.status_code == 200 else {}
+    if not data.get("refresh_token") or gmail_sender.GMAIL_SCOPE not in (data.get("scope") or ""):
+        print(f"[Gmail] connect failed: {resp.status_code} {resp.text[:300]}")
+        return done("gmail_error", "Google didn't allow sending email. Tick the 'Send email on your behalf' box and try again.")
+    try:
+        info = await _verify_google_id_token(data.get("id_token") or "")
+    except HTTPException as e:
+        return done("gmail_error", str(e.detail))
+    gmail_sender.save_config(info["email"].lower(), data["refresh_token"], datetime.now(timezone.utc).isoformat())
+    return done("gmail_connected", info["email"].lower())
+
+
+@router.post("/admin/gmail/test", dependencies=ADMIN)
+async def gmail_test(admin: Dict[str, Any] = Depends(require_admin)):
+    import gmail_sender
+    if not gmail_sender.is_configured():
+        raise HTTPException(status_code=400, detail="Connect Gmail first.")
+    to = admin.get("email") or ""
+    ok = gmail_sender.send(to, "Smart Ease: Gmail is connected",
+                           "Password reset codes for Smart Ease apps will be sent from this Gmail.",
+                           "<p>Password reset codes for Smart Ease apps will be sent from this Gmail.</p>")
+    if not ok:
+        raise HTTPException(status_code=502, detail="Gmail refused to send. Try connecting Gmail again.")
+    return {"success": True, "sentTo": to}
+
+
+@router.post("/admin/gmail/disconnect", dependencies=ADMIN)
+async def gmail_disconnect():
+    import gmail_sender
+    gmail_sender.clear_config()
+    return {"success": True}
 
 
 @router.post("/auth/google/exchange")
@@ -2388,7 +2466,8 @@ async def auth_forgot_password(payload: Dict[str, Any] = Body(...)):
     email = (payload.get("email") or "").strip().lower()
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="Please enter a valid email address.")
-    if not email_verification_required():
+    from email_service import can_send_email
+    if not can_send_email():
         raise HTTPException(status_code=503, detail="Password reset by email isn't available yet. "
                             "If this is a Gmail address, use 'Continue with Google', or contact Smart Ease support to reset your password.")
     generic = {"success": True, "message": "If an account exists for this email, a reset code has been sent. Check your inbox and spam folder."}

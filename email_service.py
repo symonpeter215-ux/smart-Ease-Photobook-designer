@@ -113,11 +113,21 @@ def _send_via_brevo(to: str, subject: str, plain_text: str, html_body: str) -> b
         print(f"[Email] Brevo delivery error to {to}: {e}")
         return False
 
+def can_send_email() -> bool:
+    """True when any channel can deliver mail: Brevo, SMTP, or the admin's connected Gmail."""
+    if is_smtp_configured():
+        return True
+    import gmail_sender
+    return gmail_sender.is_configured()
+
 def send_email(to: str, subject: str, plain_text: str, html_body: str) -> bool:
     """Sends one email synchronously. Returns False (and logs) if email isn't set up or delivery fails."""
     if BREVO_API_KEY and FROM_EMAIL:
         return _send_via_brevo(to, subject, plain_text, html_body)
     if not is_smtp_configured():
+        import gmail_sender
+        if gmail_sender.is_configured():
+            return gmail_sender.send(to, subject, plain_text, html_body, from_name="Smart Ease")
         print(f"[Email] Email not configured; could not send '{subject}' to {to}")
         return False
     try:

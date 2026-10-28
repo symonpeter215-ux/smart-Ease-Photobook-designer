@@ -25,7 +25,10 @@ let _googleAdminError = '';
   const token = params.get('admin_token');
   _googleAdminError = params.get('admin_error') || '';
   if (token) { try { localStorage.setItem(ADMIN_TOKEN_KEY, token); } catch (_) {} }
-  if (token || _googleAdminError) history.replaceState(null, '', window.location.pathname + window.location.search);
+  window._gmailResult = { connected: params.get('gmail_connected'), error: params.get('gmail_error') };
+  if (token || _googleAdminError || window._gmailResult.connected || window._gmailResult.error) {
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
 })();
 
 // All /api/ calls go to the server with the admin's session token; 401/403 opens the sign-in form.
@@ -131,7 +134,57 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Initial Data Load
   loadDashboardData();
+  loadGmailStatus();
+  if (window._gmailResult.connected) showToast(`Gmail connected: ${escapeHtml(window._gmailResult.connected)}. Reset codes now go out from it.`, 'success');
+  if (window._gmailResult.error) showToast(escapeHtml(window._gmailResult.error), 'error');
 });
+
+// Gmail as the sender for password reset codes (customers reset their own passwords).
+async function loadGmailStatus() {
+  const text = document.getElementById('gmailStatusText');
+  if (!text) return;
+  try {
+    const res = await fetch('/api/v1/admin/gmail/status');
+    if (!res.ok) return;
+    const s = await res.json();
+    text.textContent = s.connected
+      ? `Sent from ${s.email}. Customers can reset forgotten passwords themselves.`
+      : 'Not connected. Connect your Gmail so customers can reset forgotten passwords themselves.';
+    document.getElementById('btnGmailConnect').textContent = s.connected ? 'Reconnect' : 'Connect Gmail';
+    document.getElementById('btnGmailTest').style.display = s.connected ? '' : 'none';
+    document.getElementById('btnGmailDisconnect').style.display = s.connected ? '' : 'none';
+  } catch (_) {
+    text.textContent = 'Could not check the email status.';
+  }
+}
+
+async function connectGmail() {
+  try {
+    const res = await fetch('/api/v1/admin/gmail/connect', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.url) throw new Error(data.detail || 'Could not start the Gmail connection');
+    window.location.href = data.url;
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function testGmail() {
+  try {
+    const res = await fetch('/api/v1/admin/gmail/test', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || 'Test email failed');
+    showToast(`Test email sent to ${escapeHtml(data.sentTo)}. Check your inbox.`, 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function disconnectGmail() {
+  if (!confirm('Disconnect Gmail? Customers will no longer be able to reset forgotten passwords themselves.')) return;
+  await fetch('/api/v1/admin/gmail/disconnect', { method: 'POST' });
+  loadGmailStatus();
+}
 
 // Toast notification helper
 function showToast(message, type = 'info') {
