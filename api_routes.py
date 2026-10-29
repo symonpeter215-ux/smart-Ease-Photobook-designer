@@ -1933,7 +1933,9 @@ async def register_auth_user(payload: Dict[str, Any] = Body(...)):
             print(f"[MongoDB] Error upserting user: {me}")
 
     try:
-        sent = issue_email_code(conn, user_id, email, full_name) if email_verification_required() else False
+        # Free ("Skip") use in the apps needs a confirmed email, so new accounts always get a code when email works.
+        from email_service import can_send_email
+        sent = issue_email_code(conn, user_id, email, full_name) if can_send_email() else False
         resp = _auth_response(user_id, email, full_name, "email", conn)
         resp["verificationEmailSent"] = sent
         return resp
@@ -2427,7 +2429,8 @@ async def auth_verify_email(payload: Dict[str, Any] = Body(...), user: Dict[str,
 async def auth_resend_verification(user: Dict[str, Any] = Depends(require_user)):
     if user.get("email_verified"):
         return {"success": True, "emailVerified": True}
-    if not email_verification_required():
+    from email_service import can_send_email
+    if not can_send_email():
         raise HTTPException(status_code=503, detail="Email sending is not set up yet. Please contact Smart Ease support.")
     sent_at = user.get("email_code_sent_at")
     if sent_at and (datetime.now(timezone.utc) - datetime.fromisoformat(sent_at)).total_seconds() < EMAIL_CODE_RESEND_SECONDS:
