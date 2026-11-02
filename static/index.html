@@ -87,6 +87,37 @@
           </div>
         </div>
 
+        <!-- "New version" emails to customers -->
+        <div id="releaseMailCard" class="pass-panel" style="display:flex;flex-direction:column;align-items:stretch;text-align:left;gap:10px;margin-bottom:16px;">
+          <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;">
+            <div style="min-width:0;">
+              <strong>New version emails</strong>
+              <div class="text-hint" id="releaseMailStatus">Checking…</div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <button class="btn btn-primary btn-sm" id="btnReleaseMailNew" onclick="toggleReleaseMailForm(true)">Email customers about an update</button>
+              <button class="btn btn-secondary btn-sm" id="btnReleaseMailContinue" onclick="continueReleaseMail()" style="display:none;">Send the rest</button>
+            </div>
+          </div>
+          <form id="releaseMailForm" style="display:none;flex-direction:column;gap:8px;" onsubmit="startReleaseMail(event)">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <select id="releaseMailApp" class="select-control" style="flex:1;min-width:200px;">
+                <option>Smart Ease Photobook Studio</option>
+                <option>Ease Select</option>
+                <option>Ease Retouch Academy</option>
+              </select>
+              <input id="releaseMailVersion" class="text-input" placeholder="New version, e.g. 1.4" required style="width:180px;">
+            </div>
+            <textarea id="releaseMailNotes" class="text-input" rows="3" placeholder="What's new (one point per line)"></textarea>
+            <input id="releaseMailUrl" class="text-input" type="url" required value="https://ease-creative-suite.b-cdn.net/index.html">
+            <div class="text-hint">Goes to every customer with a confirmed email who hasn't unsubscribed, from your connected Gmail, up to 450 a day.</div>
+            <div style="display:flex;gap:8px;">
+              <button type="submit" class="btn btn-primary btn-sm">Send emails</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="toggleReleaseMailForm(false)">Cancel</button>
+            </div>
+          </form>
+        </div>
+
         <!-- 8 Summary KPI Cards -->
         <div class="kpi-grid">
           <!-- Card 1: Total Registered Users -->

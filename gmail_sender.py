@@ -116,7 +116,8 @@ def _access_token(cfg: Dict[str, Any]) -> Optional[str]:
     return _access["token"]
 
 
-def send(to: str, subject: str, plain_text: str, html_body: str, from_name: str = "Smart Ease") -> bool:
+def send(to: str, subject: str, plain_text: str, html_body: str, from_name: str = "Smart Ease",
+         headers: Optional[Dict[str, str]] = None) -> bool:
     cfg = load_config()
     if not cfg:
         return False
@@ -128,6 +129,8 @@ def send(to: str, subject: str, plain_text: str, html_body: str, from_name: str 
         msg["To"] = to
         msg["From"] = formataddr((from_name, cfg["email"]))
         msg["Subject"] = subject
+        for name, value in (headers or {}).items():
+            msg[name] = value
         msg.attach(MIMEText(plain_text, "plain", "utf-8"))
         msg.attach(MIMEText(html_body, "html", "utf-8"))
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")

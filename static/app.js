@@ -135,6 +135,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initial Data Load
   loadDashboardData();
   loadGmailStatus();
+  loadReleaseMailStatus();
   if (window._gmailResult.connected) showToast(`Gmail connected: ${escapeHtml(window._gmailResult.connected)}. Reset codes now go out from it.`, 'success');
   if (window._gmailResult.error) showToast(escapeHtml(window._gmailResult.error), 'error');
 });
@@ -184,6 +185,80 @@ async function disconnectGmail() {
   if (!confirm('Disconnect Gmail? Customers will no longer be able to reset forgotten passwords themselves.')) return;
   await fetch('/api/v1/admin/gmail/disconnect', { method: 'POST' });
   loadGmailStatus();
+}
+
+// "New version" emails: sent from the connected Gmail, at most the daily limit per day.
+let _releaseMailTimer = null;
+
+async function loadReleaseMailStatus() {
+  const text = document.getElementById('releaseMailStatus');
+  if (!text) return;
+  try {
+    const res = await fetch('/api/v1/admin/release-email/status');
+    if (!res.ok) return;
+    const s = await res.json();
+    const c = s.campaign;
+    let line;
+    if (!s.gmailConnected) line = 'Connect Gmail above first; update emails are sent from it.';
+    else if (!c) line = `${s.recipients} customers with a confirmed email will get it.`;
+    else if (s.sending) line = `Sending ${escapeHtml(c.app)} ${escapeHtml(c.version)}: ${c.sent} sent, ${c.remaining} to go…`;
+    else if (c.remaining > 0) line = `${escapeHtml(c.app)} ${escapeHtml(c.version)}: ${c.sent} sent, ${c.remaining} still to send`
+      + (s.sentToday >= s.dailyLimit ? ` (today's limit of ${s.dailyLimit} reached, send the rest tomorrow).` : '.');
+    else line = `Last update email: ${escapeHtml(c.app)} ${escapeHtml(c.version)}, sent to ${c.sent - c.failed} customers`
+      + (c.failed ? ` (${c.failed} could not be delivered).` : '.');
+    text.innerHTML = line;
+    document.getElementById('btnReleaseMailContinue').style.display =
+      c && !s.sending && c.remaining > 0 && s.sentToday < s.dailyLimit ? '' : 'none';
+    clearTimeout(_releaseMailTimer);
+    if (s.sending) _releaseMailTimer = setTimeout(loadReleaseMailStatus, 4000);
+  } catch (_) {
+    text.textContent = 'Could not check the update emails.';
+  }
+}
+
+function toggleReleaseMailForm(show) {
+  document.getElementById('releaseMailForm').style.display = show ? 'flex' : 'none';
+  document.getElementById('btnReleaseMailNew').style.display = show ? 'none' : '';
+}
+
+async function startReleaseMail(event, replace = false) {
+  if (event) event.preventDefault();
+  const body = {
+    app: document.getElementById('releaseMailApp').value,
+    version: document.getElementById('releaseMailVersion').value.trim(),
+    notes: document.getElementById('releaseMailNotes').value,
+    url: document.getElementById('releaseMailUrl').value.trim(),
+    replace
+  };
+  if (!replace && !confirm(`Email customers that ${body.app} ${body.version} is out?`)) return;
+  try {
+    const res = await fetch('/api/v1/admin/release-email/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 409 && !replace && /haven't all gone out/.test(data.detail || '')) {
+      if (confirm(`${data.detail}\n\nStart the new one anyway?`)) return startReleaseMail(null, true);
+      return;
+    }
+    if (!res.ok) throw new Error(data.detail || 'Could not start the emails');
+    toggleReleaseMailForm(false);
+    showToast('Update emails are going out.', 'success');
+  } catch (err) {
+    showToast(escapeHtml(err.message), 'error');
+  }
+  loadReleaseMailStatus();
+}
+
+async function continueReleaseMail() {
+  try {
+    const res = await fetch('/api/v1/admin/release-email/continue', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || 'Could not continue');
+    showToast('Sending the rest of the update emails.', 'success');
+  } catch (err) {
+    showToast(escapeHtml(err.message), 'error');
+  }
+  loadReleaseMailStatus();
 }
 
 // Toast notification helper

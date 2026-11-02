@@ -2208,6 +2208,55 @@ async def gmail_disconnect():
     return {"success": True}
 
 
+# ---------- "New version" emails to customers ----------
+
+@router.get("/admin/release-email/status", dependencies=ADMIN)
+async def release_email_status():
+    import release_mail
+    return release_mail.status()
+
+
+@router.post("/admin/release-email/start", dependencies=ADMIN)
+async def release_email_start(request: Request, payload: Dict[str, Any] = Body(...)):
+    import release_mail
+    app = str(payload.get("app") or "").strip()
+    version = str(payload.get("version") or "").strip()
+    url = str(payload.get("url") or "").strip()
+    if not app or not version:
+        raise HTTPException(status_code=400, detail="Choose the app and type the new version number.")
+    if not url.startswith("https://"):
+        raise HTTPException(status_code=400, detail="The download link must start with https://")
+    # Links in the email point back to this server (for unsubscribing).
+    server = os.environ.get("PUBLIC_SERVER_URL") or str(request.base_url).replace("http://", "https://", 1)
+    try:
+        return release_mail.start(app, version, str(payload.get("notes") or "").strip()[:2000], url,
+                                  server, replace=bool(payload.get("replace")))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.post("/admin/release-email/continue", dependencies=ADMIN)
+async def release_email_continue():
+    import release_mail
+    try:
+        return release_mail.continue_sending()
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/email/unsubscribe")
+async def release_email_unsubscribe(u: str = "", t: str = ""):
+    import release_mail
+    from fastapi.responses import HTMLResponse
+    ok = release_mail.unsubscribe(u, t)
+    message = ("You won't get Smart Ease update emails any more. Password reset codes still reach you when you ask for one."
+               if ok else "This unsubscribe link isn't valid. Email symonpeter215@gmail.com and we'll take you off the list.")
+    return HTMLResponse(f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Ease emails</title></head><body style="font-family:Segoe UI,Arial,sans-serif;max-width:520px;margin:48px auto;padding:0 16px;color:#1f2937;">
+<h1 style="font-size:1.4rem;">{'Unsubscribed' if ok else 'Link not valid'}</h1><p>{message}</p></body></html>""",
+                        status_code=200 if ok else 400)
+
+
 @router.post("/auth/google/exchange")
 async def google_auth_exchange(payload: Dict[str, Any] = Body(...)):
     """
