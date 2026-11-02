@@ -2062,12 +2062,24 @@ async def login_auth_user(payload: Dict[str, Any] = Body(...)):
 # Values copied from Google's console often pick up line breaks; IDs and secrets never contain whitespace.
 GOOGLE_CLIENT_ID = "".join(os.environ.get("GOOGLE_CLIENT_ID", "").split())
 GOOGLE_CLIENT_SECRET = "".join(os.environ.get("GOOGLE_CLIENT_SECRET", "").split())
+# Optional Google "Desktop app" client for the desktop apps. Google lets a Desktop client return to
+# http://127.0.0.1 on ANY port, so an app that had to pick a different port (or a new app) never hits
+# "redirect_uri_mismatch". Without it, the web client is used and every port must be registered.
+GOOGLE_DESKTOP_CLIENT_ID = "".join(os.environ.get("GOOGLE_DESKTOP_CLIENT_ID", "").split())
+GOOGLE_DESKTOP_CLIENT_SECRET = "".join(os.environ.get("GOOGLE_DESKTOP_CLIENT_SECRET", "").split())
+
+
+def _desktop_google_clients():
+    """(client_id, secret) pairs for desktop sign-in, preferred first."""
+    pairs = [(GOOGLE_DESKTOP_CLIENT_ID, GOOGLE_DESKTOP_CLIENT_SECRET), (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET)]
+    return [(cid, sec) for cid, sec in pairs if cid and sec]
 
 
 @router.get("/auth/google/config")
 async def google_auth_config():
     """Public: lets the desktop apps start Google sign-in without shipping the client ID."""
-    return {"enabled": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET), "clientId": GOOGLE_CLIENT_ID}
+    clients = _desktop_google_clients()
+    return {"enabled": bool(clients), "clientId": clients[0][0] if clients else ""}
 
 
 # ---------- Google sign-in for the web admin console ----------
@@ -2298,7 +2310,8 @@ async def google_auth_exchange(payload: Dict[str, Any] = Body(...)):
     Desktop Google sign-in: the app opened Google's consent page with PKCE and a loopback redirect,
     received the authorization code, and sends it here. The client secret never leaves the server.
     """
-    if not (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET):
+    clients = _desktop_google_clients()
+    if not clients:
         raise HTTPException(status_code=503, detail="Google sign-in is not set up on the server yet.")
     code = payload.get("code") or ""
     verifier = payload.get("codeVerifier") or payload.get("code_verifier") or ""
@@ -2308,15 +2321,20 @@ async def google_auth_exchange(payload: Dict[str, Any] = Body(...)):
     if not redirect_uri.startswith(("http://127.0.0.1:", "http://localhost:")):
         raise HTTPException(status_code=400, detail="Invalid redirect address.")
 
+    # The code belongs to whichever client the app got from /auth/google/config; an app that fetched the
+    # config before the desktop client was added still uses the web client, so try each in turn.
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post("https://oauth2.googleapis.com/token", data={
-            "code": code,
-            "client_id": GOOGLE_CLIENT_ID,
-            "client_secret": GOOGLE_CLIENT_SECRET,
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code",
-            "code_verifier": verifier,
-        })
+        for cid, secret in clients:
+            resp = await client.post("https://oauth2.googleapis.com/token", data={
+                "code": code,
+                "client_id": cid,
+                "client_secret": secret,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+                "code_verifier": verifier,
+            })
+            if resp.status_code == 200 and resp.json().get("id_token"):
+                break
     if resp.status_code != 200 or not resp.json().get("id_token"):
         print(f"[GoogleAuth] token exchange failed: {resp.status_code} {resp.text[:300]}")
         raise HTTPException(status_code=401, detail="Google sign-in failed. Please try again.")
@@ -2336,7 +2354,8 @@ async def _verify_google_id_token(id_token: str) -> Dict[str, Any]:
     if resp.status_code != 200:
         raise HTTPException(status_code=401, detail="Google sign-in could not be verified.")
     info = resp.json()
-    if GOOGLE_CLIENT_ID and info.get("aud") != GOOGLE_CLIENT_ID:
+    allowed = {cid for cid in (GOOGLE_CLIENT_ID, GOOGLE_DESKTOP_CLIENT_ID) if cid}
+    if allowed and info.get("aud") not in allowed:
         raise HTTPException(status_code=401, detail="Google sign-in was issued for a different app.")
     if str(info.get("email_verified")).lower() != "true":
         raise HTTPException(status_code=401, detail="Your Google email address is not verified.")
