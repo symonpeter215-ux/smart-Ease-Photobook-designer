@@ -837,6 +837,8 @@ def migrate_user_auth_columns(conn: sqlite3.Connection):
             conn.execute("ALTER TABLE users ADD COLUMN email_code_expires TEXT")
         if "email_code_sent_at" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN email_code_sent_at TEXT")
+        if "release_emails_opt_out" not in cols:  # "new version" emails (release_mail.py)
+            conn.execute("ALTER TABLE users ADD COLUMN release_emails_opt_out INTEGER DEFAULT 0")
 
     # Card payments buy several months at once; the paid access length is stored on the transaction.
     cursor.execute("PRAGMA table_info(transactions)")

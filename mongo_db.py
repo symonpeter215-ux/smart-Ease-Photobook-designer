@@ -118,26 +118,36 @@ def sync_mongo_to_sqlite(conn: sqlite3.Connection):
 
         tables = ["packages", "users", "subscriptions", "transactions", "user_logins"]
         for table in tables:
-            docs = list(db[table].find({}))
-            if not docs:
-                continue
-            with conn:
+            # Each table on its own: one bad record must never leave the others (e.g. every customer) unrestored.
+            try:
+                docs = list(db[table].find({}))
+                if not docs:
+                    continue
+                # Cloud records can carry fields this table doesn't have (yet); restore the known columns only.
+                # (A field added by newer code once stopped the whole restore and the console showed 0 customers.)
+                known = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                restored = skipped = 0
                 for doc in docs:
-                    # remove MongoDB internal _id for SQLite insert
                     doc_copy = dict(doc)
                     pk_id = doc_copy.pop("_id", None)
                     if not pk_id and "id" in doc_copy:
                         pk_id = doc_copy["id"]
                     if not pk_id:
                         continue
-                    
-                    columns = list(doc_copy.keys())
+                    doc_copy.setdefault("id", pk_id)
+                    columns = [c for c in doc_copy if c in known]
                     placeholders = ", ".join(["?"] * len(columns))
-                    col_names = ", ".join(columns)
-                    vals = [doc_copy[c] for c in columns]
-                    
-                    sql = f"INSERT OR REPLACE INTO {table} ({col_names}) VALUES ({placeholders})"
-                    conn.execute(sql, vals)
+                    sql = f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) VALUES ({placeholders})"
+                    try:
+                        with conn:
+                            conn.execute(sql, [doc_copy[c] for c in columns])
+                        restored += 1
+                    except Exception as row_err:
+                        skipped += 1
+                        print(f"[MongoDB] could not restore {table} {pk_id}: {row_err}")
+                print(f"[MongoDB] restored {restored} {table}" + (f", skipped {skipped}" if skipped else ""))
+            except Exception as table_err:
+                print(f"[MongoDB] restore of {table} failed: {table_err}")
         print("[MongoDB] Successfully restored and synchronized data from MongoDB cloud into SQLite.")
     except Exception as e:
         print(f"[MongoDB] sync_mongo_to_sqlite error: {e}")
