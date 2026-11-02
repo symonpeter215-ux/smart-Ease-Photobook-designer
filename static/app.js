@@ -1450,4 +1450,14 @@ document.addEventListener('DOMContentLoaded', () => {
   } catch (e) {}
   loadRecentLogins();
   setInterval(loadRecentLogins, 10000); // poll every 10s for new sign-ins
+  // Keep the dashboard figures (online now, sign-ins, earnings) current while it is on screen.
+  setInterval(() => {
+    if (!document.hidden && state.currentTab === 'dashboard') loadDashboardData();
+  }, 30000);
+  // Coming back to the console (e.g. from another app on the phone) shows the latest at once.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    loadRecentLogins();
+    if (state.currentTab === 'dashboard') loadDashboardData();
+  });
 });

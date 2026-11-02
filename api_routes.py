@@ -2074,6 +2074,44 @@ async def google_auth_config():
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://smart-ease-photobook-designer.onrender.com").rstrip("/")
 ADMIN_GOOGLE_REDIRECT = f"{PUBLIC_BASE_URL}/api/v1/auth/google/callback"
 _admin_google_states: Dict[str, Dict[str, Any]] = {}
+_OAUTH_STATE_SECONDS = 900
+
+
+def _save_oauth_state(state: str, data: Dict[str, Any]):
+    """Remembers a Google sign-in in progress. Also kept in MongoDB, because Render restarts the server on
+    every deploy and when it wakes from sleep, and briefly runs two copies while deploying; an in-memory
+    entry alone is then gone when Google sends the admin back ("This sign-in link expired")."""
+    import time
+    now = time.time()
+    for s in [s for s, v in _admin_google_states.items() if now - v["created"] > _OAUTH_STATE_SECONDS]:
+        _admin_google_states.pop(s, None)
+    _admin_google_states[state] = data
+    db = get_mongo_db()
+    if db is not None:
+        try:
+            db["oauth_states"].delete_many({"created": {"$lt": now - _OAUTH_STATE_SECONDS}})
+            db["oauth_states"].insert_one({"_id": state, **data})
+        except Exception as e:
+            print(f"[GoogleAuth] could not store sign-in state: {e}")
+
+
+def _take_oauth_state(state: str) -> Optional[Dict[str, Any]]:
+    """Returns (and forgets) a sign-in in progress, or None if unknown or older than 15 minutes."""
+    import time
+    if not state:
+        return None
+    data = _admin_google_states.pop(state, None)
+    db = get_mongo_db()
+    if db is not None:
+        try:
+            doc = db["oauth_states"].find_one_and_delete({"_id": state})
+            if data is None and doc:
+                data = {k: v for k, v in doc.items() if k != "_id"}
+        except Exception as e:
+            print(f"[GoogleAuth] could not read sign-in state: {e}")
+    if data and time.time() - data.get("created", 0) > _OAUTH_STATE_SECONDS:
+        return None
+    return data
 
 
 @router.get("/auth/google/admin-start")
@@ -2083,12 +2121,9 @@ async def google_admin_start():
     from fastapi.responses import RedirectResponse
     if not (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET):
         raise HTTPException(status_code=503, detail="Google sign-in is not set up on the server yet.")
-    now = time.time()
-    for s in [s for s, v in _admin_google_states.items() if now - v["created"] > 600]:
-        _admin_google_states.pop(s, None)
     verifier = secrets.token_urlsafe(48)
     state = secrets.token_urlsafe(16)
-    _admin_google_states[state] = {"verifier": verifier, "created": now}
+    _save_oauth_state(state, {"verifier": verifier, "created": time.time()})
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     params = {
         "client_id": GOOGLE_CLIENT_ID, "redirect_uri": ADMIN_GOOGLE_REDIRECT, "response_type": "code",
@@ -2105,7 +2140,7 @@ async def google_admin_callback(code: str = Query(default=""), state: str = Quer
     from fastapi.responses import RedirectResponse
     console = f"{PUBLIC_BASE_URL}/static/index.html"
     fail = lambda msg: RedirectResponse(f"{console}#admin_error={urllib.parse.quote(msg)}")
-    pending = _admin_google_states.pop(state, None)
+    pending = _take_oauth_state(state)
     if pending and pending.get("purpose") == "gmail":
         return await _finish_gmail_connect(code, error, pending, console)
     if error or not code:
@@ -2150,7 +2185,7 @@ async def gmail_connect_start():
         raise HTTPException(status_code=503, detail="Google sign-in is not set up on the server yet.")
     verifier = secrets.token_urlsafe(48)
     state = secrets.token_urlsafe(16)
-    _admin_google_states[state] = {"verifier": verifier, "created": time.time(), "purpose": "gmail"}
+    _save_oauth_state(state, {"verifier": verifier, "created": time.time(), "purpose": "gmail"})
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     params = {
         "client_id": GOOGLE_CLIENT_ID, "redirect_uri": ADMIN_GOOGLE_REDIRECT, "response_type": "code",
