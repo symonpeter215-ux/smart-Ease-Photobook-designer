@@ -203,6 +203,8 @@ CURRENT_PACKAGES = [
      "Subscription for Ease Select."),
     ("pkg_retouch_academy", "Ease Retouching Academy", 6.85, "retouch_academy",
      "Subscription for Ease Retouching Academy."),
+    ("pkg_school_sync", "Ease School Sync", 27.39, "school_sync",
+     "Subscription for Ease School Sync: school records, parent portal, staff accounts and SMS."),
 ]
 
 

@@ -47,19 +47,25 @@ PLAN_OPTIONS = {
     "pkg_photobook": [(1, 2.28), (6, 11.41), (12, 22.82)],
     "pkg_ease_select": [(1, 2.28), (6, 11.41), (12, 22.82)],
     "pkg_retouch_academy": [(1, 6.85), (6, 34.23), (12, 61.61)],
+    # Ease School Sync: UGX 120,000 / 600,000 / 1,000,000 at the same ~4,381 UGX per USD as the other packages.
+    "pkg_school_sync": [(1, 27.39), (6, 136.95), (12, 228.26)],
 }
-PLAN_SORT_ORDER = {"pkg_all_in_one": 0, "pkg_photobook": 1, "pkg_ease_select": 2, "pkg_retouch_academy": 3}
+PLAN_SORT_ORDER = {"pkg_all_in_one": 0, "pkg_photobook": 1, "pkg_ease_select": 2, "pkg_retouch_academy": 3,
+                   "pkg_school_sync": 4}
 DAYS_PER_MONTH = 30
 CARD_MIN_USD = float(os.environ.get("LIVEPAY_CARD_MIN_USD") or 1)
 
-# Ease Creative Suite apps and which package access values unlock them.
-PRODUCTS = ("photobook", "ease_select", "retouch_academy")
+# Ease Creative Suite apps and which package access values unlock them. Ease School Sync is sold on its own:
+# the All-in-One package ('all') covers the Creative Suite only.
+CREATIVE_SUITE = ("photobook", "ease_select", "retouch_academy")
+PRODUCTS = CREATIVE_SUITE + ("school_sync",)
 ACCESS_COVERS = {
-    "all": set(PRODUCTS),
+    "all": set(CREATIVE_SUITE),
     "both": {"photobook", "ease_select"},  # old bundle / lifetime holders
     "photobook": {"photobook"},
     "ease_select": {"ease_select"},
     "retouch_academy": {"retouch_academy"},
+    "school_sync": {"school_sync"},
 }
 
 
@@ -69,6 +75,8 @@ def normalize_product(product: Optional[str]) -> str:
         return "ease_select"
     if p in ("retouch", "retouching", "retouch_academy", "retouching_academy", "ease_retouching_academy", "academy"):
         return "retouch_academy"
+    if p in ("school_sync", "ease_school_sync", "schoolsync", "easeschoolsync"):
+        return "school_sync"
     return "photobook"
 
 
@@ -421,8 +429,16 @@ async def get_users(
         has_ind_es = any(s["package_id"] == "pkg_ease_select" for s in active_subs)
         has_all_in_one = any(s["package_id"] == "pkg_all_in_one" for s in active_subs)
         has_retouch = any(s["package_id"] == "pkg_retouch_academy" for s in active_subs)
+        has_school = any(s["package_id"] == "pkg_school_sync" for s in active_subs)
+        has_creative = has_all_in_one or has_retouch or has_lifetime or has_bundle or has_ind_pb or has_ind_es
 
-        if has_all_in_one:
+        if has_school and not has_creative:
+            u["app_access_code"] = "independent_school_sync"
+            u["app_access_label"] = "Ease School Sync (Independent Sub)"
+            u["app_access_category"] = "independent"
+            u["app_access_badge"] = "badge-teal"
+            u["product_owned"] = "Ease School Sync"
+        elif has_all_in_one:
             u["app_access_code"] = "all_in_one"
             u["app_access_label"] = "All Apps (All-in-One)"
             u["app_access_category"] = "both"
@@ -483,6 +499,11 @@ async def get_users(
                     u["app_access_label"] = "Retouching Academy (Expired)"
                     u["app_access_category"] = "independent"
                     u["app_access_badge"] = "badge-danger"
+                elif pkg == "pkg_school_sync":
+                    u["app_access_code"] = "independent_school_sync"
+                    u["app_access_label"] = "Ease School Sync (Expired)"
+                    u["app_access_category"] = "independent"
+                    u["app_access_badge"] = "badge-danger"
                 elif pkg == "pkg_all_in_one":
                     u["app_access_code"] = "all_in_one"
                     u["app_access_label"] = "All Apps (Expired)"
@@ -502,6 +523,9 @@ async def get_users(
         # Retouching Academy bought alongside Photobook / Ease Select subscriptions
         if has_retouch and u.get("app_access_code") not in ("all_in_one", "independent_retouch_academy"):
             u["app_access_label"] = f'{u["app_access_label"]} + Retouching Academy'
+        # Ease School Sync bought alongside Creative Suite subscriptions
+        if has_school and has_creative:
+            u["app_access_label"] = f'{u["app_access_label"]} + School Sync'
 
         # Determine Live Presence & Connection Mode
         now_dt = datetime.now(timezone.utc)
