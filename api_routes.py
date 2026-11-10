@@ -2310,6 +2310,22 @@ async def google_auth_exchange(payload: Dict[str, Any] = Body(...)):
     Desktop Google sign-in: the app opened Google's consent page with PKCE and a loopback redirect,
     received the authorization code, and sends it here. The client secret never leaves the server.
     """
+    tokens = await _exchange_google_code(payload)
+    result = await google_auth_user({
+        "idToken": tokens["id_token"],
+        "sourceApp": payload.get("sourceApp") or "Photobook",
+        "deviceHostname": payload.get("deviceHostname"),
+    })
+    if payload.get("wantDrive") and isinstance(result, dict):
+        result["googleDrive"] = _drive_grant(tokens, ((result.get("user") or {}).get("email") or ""))
+    return result
+
+
+DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+
+
+async def _exchange_google_code(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Swaps a desktop app's Google authorization code (PKCE, loopback redirect) for Google's tokens."""
     clients = _desktop_google_clients()
     if not clients:
         raise HTTPException(status_code=503, detail="Google sign-in is not set up on the server yet.")
@@ -2338,12 +2354,45 @@ async def google_auth_exchange(payload: Dict[str, Any] = Body(...)):
     if resp.status_code != 200 or not resp.json().get("id_token"):
         print(f"[GoogleAuth] token exchange failed: {resp.status_code} {resp.text[:300]}")
         raise HTTPException(status_code=401, detail="Google sign-in failed. Please try again.")
+    return resp.json()
 
-    return await google_auth_user({
-        "idToken": resp.json()["id_token"],
-        "sourceApp": payload.get("sourceApp") or "Photobook",
-        "deviceHostname": payload.get("deviceHostname"),
-    })
+
+def _drive_grant(tokens: Dict[str, Any], email: str) -> Optional[Dict[str, Any]]:
+    """Ease School Sync backs a school's data up to the signed-in person's own Google Drive (only files the app
+    creates). Hands the app its Drive tokens when the person agreed to Drive access; the client secret stays here."""
+    if DRIVE_FILE_SCOPE not in (tokens.get("scope") or "").split() or not tokens.get("refresh_token"):
+        return None
+    return {"email": (email or "").lower(), "refreshToken": tokens["refresh_token"],
+            "accessToken": tokens.get("access_token", ""), "expiresIn": tokens.get("expires_in", 0)}
+
+
+@router.post("/auth/google/drive-link")
+async def google_drive_link(payload: Dict[str, Any] = Body(...), user: Dict[str, Any] = Depends(require_user)):
+    """Connects Google Drive for a signed-in account (e.g. one that uses email + password) without changing
+    who is signed in. Returns the Drive tokens and the Google account's email, which the app checks."""
+    tokens = await _exchange_google_code(payload)
+    info = await _verify_google_id_token(tokens["id_token"])
+    grant = _drive_grant(tokens, info.get("email") or "")
+    if not grant:
+        raise HTTPException(status_code=400, detail="Google Drive access wasn't granted. Tick the Google Drive box and try again.")
+    return {"success": True, "googleDrive": grant}
+
+
+@router.post("/auth/google/drive-token")
+async def google_drive_token(payload: Dict[str, Any] = Body(...), user: Dict[str, Any] = Depends(require_user)):
+    """Gives a signed-in app a fresh Google Drive access token from its refresh token (the secret stays here)."""
+    refresh_token = payload.get("refreshToken") or ""
+    if not refresh_token:
+        raise HTTPException(status_code=400, detail="Missing Google Drive connection.")
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        for cid, secret in _desktop_google_clients():
+            resp = await client.post("https://oauth2.googleapis.com/token", data={
+                "client_id": cid, "client_secret": secret, "refresh_token": refresh_token, "grant_type": "refresh_token",
+            })
+            if resp.status_code == 200 and resp.json().get("access_token"):
+                data = resp.json()
+                return {"success": True, "accessToken": data["access_token"], "expiresIn": data.get("expires_in", 3600)}
+    raise HTTPException(status_code=401, detail="The Google Drive connection has expired. Connect Google Drive again.")
 
 async def _verify_google_id_token(id_token: str) -> Dict[str, Any]:
     """Asks Google to validate the ID token; identity fields come from Google, never from the client."""
