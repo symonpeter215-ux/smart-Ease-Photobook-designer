@@ -2297,7 +2297,7 @@ async def release_email_unsubscribe(u: str = "", t: str = ""):
     from fastapi.responses import HTMLResponse
     ok = release_mail.unsubscribe(u, t)
     message = ("You won't get Smart Ease update emails any more. Password reset codes still reach you when you ask for one."
-               if ok else "This unsubscribe link isn't valid. Email symonpeter215@gmail.com and we'll take you off the list.")
+               if ok else "This unsubscribe link isn't valid. Email easecreativesuite@gmail.com and we'll take you off the list.")
     return HTMLResponse(f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Smart Ease emails</title></head><body style="font-family:Segoe UI,Arial,sans-serif;max-width:520px;margin:48px auto;padding:0 16px;color:#1f2937;">
 <h1 style="font-size:1.4rem;">{'Unsubscribed' if ok else 'Link not valid'}</h1><p>{message}</p></body></html>""",
