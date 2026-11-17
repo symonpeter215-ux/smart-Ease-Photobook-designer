@@ -1056,6 +1056,8 @@ async function loadDailyRevenue() {
     document.getElementById('dailyRevEaseSelect').textContent = fmtUSD(d.revenue_ease_select);
     document.getElementById('dailyRevCombined').textContent = fmtUSD(d.revenue_combined_packages);
     document.getElementById('dailyRevLifetime').textContent = fmtUSD(d.revenue_lifetime_pro);
+    const dss = document.getElementById('dailyRevSchoolSync');
+    if (dss) dss.textContent = fmtUSD(d.revenue_school_sync || 0);
   } catch (err) {
     console.error('Daily revenue error:', err);
   }
@@ -1077,6 +1079,8 @@ async function loadMonthlyRevenue() {
     document.getElementById('mRevEaseSelect').textContent = fmtUSD(m.revenue_by_product.ease_select);
     document.getElementById('mRevBundle').textContent = fmtUSD(m.revenue_by_product.combined);
     document.getElementById('mRevLifetime').textContent = fmtUSD(m.revenue_by_product.lifetime);
+    const mss = document.getElementById('mRevSchoolSync');
+    if (mss) mss.textContent = fmtUSD(m.revenue_by_product.school_sync || 0);
 
     document.getElementById('mRevRecurring').textContent = fmtUSD(m.revenue_recurring_subscriptions);
     document.getElementById('mRevLifetimeType').textContent = fmtUSD(m.revenue_lifetime_purchases);

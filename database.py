@@ -205,25 +205,29 @@ CURRENT_PACKAGES = [
      "Subscription for Ease Retouching Academy."),
     ("pkg_school_sync", "Ease School Sync", 27.39, "school_sync",
      "Subscription for Ease School Sync: school records, parent portal, staff accounts and SMS."),
+    ("pkg_pass_24h", "24-Hour Complete Suite Pass", 1.20, "all",
+     "24-hour full commercial access across Smart Ease Photobook Studio, Ease Select and Ease Retouching Academy."),
 ]
 
 
 def ensure_current_packages(conn: sqlite3.Connection):
-    """Adds packages that are missing and keeps the listed 1-month prices current.
+    """Adds packages that are missing and keeps the listed prices current.
     Existing subscriptions are never touched."""
     now = datetime.now(timezone.utc).isoformat()
     with conn:
         for pkg_id, name, price, access, desc in CURRENT_PACKAGES:
+            b_type = "24_hour_pass" if pkg_id == "pkg_pass_24h" else "recurring"
+            b_interval = "24h" if pkg_id == "pkg_pass_24h" else "monthly"
             row = conn.execute("SELECT id FROM packages WHERE id = ?", (pkg_id,)).fetchone()
             if row:
-                conn.execute("""UPDATE packages SET name = ?, price = ?, product_access = ?, description = ?,
-                                is_active = 1, updated_at = ? WHERE id = ?""",
-                             (name, price, access, desc, now, pkg_id))
+                conn.execute("""UPDATE packages SET name = ?, price = ?, billing_type = ?, billing_interval = ?,
+                                product_access = ?, description = ?, is_active = 1, updated_at = ? WHERE id = ?""",
+                             (name, price, b_type, b_interval, access, desc, now, pkg_id))
             else:
                 conn.execute("""INSERT INTO packages (id, name, price, currency, billing_type, billing_interval,
                                 product_access, description, is_active, created_at, updated_at)
-                                VALUES (?, ?, ?, 'USD', 'recurring', 'monthly', ?, ?, 1, ?, ?)""",
-                             (pkg_id, name, price, access, desc, now, now))
+                                VALUES (?, ?, ?, 'USD', ?, ?, ?, ?, 1, ?, ?)""",
+                             (pkg_id, name, price, b_type, b_interval, access, desc, now, now))
 
 
 def seed_initial_packages(conn: sqlite3.Connection):

@@ -49,9 +49,11 @@ PLAN_OPTIONS = {
     "pkg_retouch_academy": [(1, 6.85), (6, 34.23), (12, 61.61)],
     # Ease School Sync: UGX 120,000 / 600,000 / 1,000,000 at the same ~4,381 UGX per USD as the other packages.
     "pkg_school_sync": [(1, 27.39), (6, 136.95), (12, 228.26)],
+    "pkg_pass_24h": [(1, 1.20)],
 }
 PLAN_SORT_ORDER = {"pkg_all_in_one": 0, "pkg_photobook": 1, "pkg_ease_select": 2, "pkg_retouch_academy": 3,
-                   "pkg_school_sync": 4}
+                   "pkg_school_sync": 4, "pkg_pass_24h": 5}
+PASS_DURATION_DAYS = {"pkg_pass_24h": 1}
 DAYS_PER_MONTH = 30
 CARD_MIN_USD = float(os.environ.get("LIVEPAY_CARD_MIN_USD") or 1)
 
@@ -80,6 +82,11 @@ def normalize_product(product: Optional[str]) -> str:
     return "photobook"
 
 
+def _is_school_sync(package_id: str, name: str) -> bool:
+    """Ease School Sync payments (sold on their own) in the revenue reports."""
+    return "school_sync" in (package_id or "") or "school sync" in (name or "")
+
+
 def access_includes(product_access: Optional[str], product: str) -> bool:
     return product in ACCESS_COVERS.get((product_access or "").lower(), set())
 
@@ -87,9 +94,18 @@ def access_includes(product_access: Optional[str], product: str) -> bool:
 def plan_options(pkg: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Choices customers can pay for. Packages without options aren't sold;
     admins can still grant them from the console, and existing holders keep their access."""
+    pkg_id = pkg["id"]
+    pass_days = PASS_DURATION_DAYS.get(pkg_id)
+
     def label(m):
+        if pass_days == 1:
+            return "24 hours"
         return "1 month" if m == 1 else ("1 year" if m == 12 else f"{m} months")
-    return [{"months": m, "price": p, "label": label(m)} for m, p in PLAN_OPTIONS.get(pkg["id"], [])]
+
+    def days(m):
+        return pass_days if pass_days else (m * DAYS_PER_MONTH)
+
+    return [{"months": m, "days": days(m), "price": p, "label": label(m)} for m, p in PLAN_OPTIONS.get(pkg_id, [])]
 
 # Helper to format currency
 def fmt_money(val: float) -> float:
@@ -316,7 +332,7 @@ async def get_dashboard_chart(year: int = Query(default=None), month: int = Quer
     conn.close()
 
     # Aggregate by day
-    daily_data = {d: {"day": d, "date": f"{month_str}-{d:02d}", "total": 0.0, "count": 0, "photobook": 0.0, "ease_select": 0.0, "bundle": 0.0, "lifetime": 0.0} for d in range(1, days_in_month + 1)}
+    daily_data = {d: {"day": d, "date": f"{month_str}-{d:02d}", "total": 0.0, "count": 0, "photobook": 0.0, "ease_select": 0.0, "bundle": 0.0, "lifetime": 0.0, "school_sync": 0.0} for d in range(1, days_in_month + 1)}
 
     for r in rows:
         try:
@@ -328,7 +344,9 @@ async def get_dashboard_chart(year: int = Query(default=None), month: int = Quer
             if day_num in daily_data:
                 daily_data[day_num]["total"] += net
                 daily_data[day_num]["count"] += 1
-                if "lifetime" in pkg or "lifetime" in name:
+                if _is_school_sync(pkg, name):
+                    daily_data[day_num]["school_sync"] += net
+                elif "lifetime" in pkg or "lifetime" in name:
                     daily_data[day_num]["lifetime"] += net
                 elif "bundle" in pkg or "+" in name:
                     daily_data[day_num]["bundle"] += net
@@ -349,6 +367,7 @@ async def get_dashboard_chart(year: int = Query(default=None), month: int = Quer
         item["ease_select"] = fmt_money(item["ease_select"])
         item["bundle"] = fmt_money(item["bundle"])
         item["lifetime"] = fmt_money(item["lifetime"])
+        item["school_sync"] = fmt_money(item["school_sync"])
         month_total += item["total"]
         result_list.append(item)
 
@@ -430,7 +449,8 @@ async def get_users(
         has_all_in_one = any(s["package_id"] == "pkg_all_in_one" for s in active_subs)
         has_retouch = any(s["package_id"] == "pkg_retouch_academy" for s in active_subs)
         has_school = any(s["package_id"] == "pkg_school_sync" for s in active_subs)
-        has_creative = has_all_in_one or has_retouch or has_lifetime or has_bundle or has_ind_pb or has_ind_es
+        has_pass_24h = any(s["package_id"] == "pkg_pass_24h" for s in active_subs)
+        has_creative = has_all_in_one or has_retouch or has_lifetime or has_bundle or has_ind_pb or has_ind_es or has_pass_24h
 
         if has_school and not has_creative:
             u["app_access_code"] = "independent_school_sync"
@@ -444,6 +464,12 @@ async def get_users(
             u["app_access_category"] = "both"
             u["app_access_badge"] = "badge-indigo"
             u["product_owned"] = "All Ease Creative Suite apps"
+        elif has_pass_24h and not (has_retouch or has_lifetime or has_bundle or has_ind_pb or has_ind_es):
+            u["app_access_code"] = "pass_24h"
+            u["app_access_label"] = "24-Hour Complete Suite Pass"
+            u["app_access_category"] = "both"
+            u["app_access_badge"] = "badge-indigo"
+            u["product_owned"] = "All Ease Creative Suite apps (24h Pass)"
         elif has_retouch and not (has_lifetime or has_bundle or has_ind_pb or has_ind_es):
             u["app_access_code"] = "independent_retouch_academy"
             u["app_access_label"] = "Retouching Academy (Independent Sub)"
@@ -507,6 +533,11 @@ async def get_users(
                 elif pkg == "pkg_all_in_one":
                     u["app_access_code"] = "all_in_one"
                     u["app_access_label"] = "All Apps (Expired)"
+                    u["app_access_category"] = "both"
+                    u["app_access_badge"] = "badge-danger"
+                elif pkg == "pkg_pass_24h":
+                    u["app_access_code"] = "pass_24h"
+                    u["app_access_label"] = "24-Hour Suite Pass (Expired)"
                     u["app_access_category"] = "both"
                     u["app_access_badge"] = "badge-danger"
                 else:
@@ -1072,6 +1103,7 @@ async def get_daily_revenue(date: Optional[str] = Query(default=None)):
     rev_ease_select = 0.0
     rev_bundle = 0.0
     rev_lifetime = 0.0
+    rev_school_sync = 0.0
 
     for t in txns:
         net = t["amount"] - t["refund_amount"]
@@ -1079,7 +1111,9 @@ async def get_daily_revenue(date: Optional[str] = Query(default=None)):
         pkg = (t["package_id"] or "").lower()
         name = (t["product_or_package"] or "").lower()
 
-        if "lifetime" in pkg or "lifetime" in name:
+        if _is_school_sync(pkg, name):  # sold on its own, never counted as Photobook
+            rev_school_sync += net
+        elif "lifetime" in pkg or "lifetime" in name:
             rev_lifetime += net
         elif "bundle" in pkg or "+" in name:
             rev_bundle += net
@@ -1098,6 +1132,7 @@ async def get_daily_revenue(date: Optional[str] = Query(default=None)):
         "revenue_ease_select": fmt_money(rev_ease_select),
         "revenue_combined_packages": fmt_money(rev_bundle),
         "revenue_lifetime_pro": fmt_money(rev_lifetime),
+        "revenue_school_sync": fmt_money(rev_school_sync),
         "currency": "USD"
     }
 
@@ -1142,6 +1177,7 @@ async def get_monthly_revenue(
     rev_bundle = 0.0
     rev_lifetime = 0.0
     rev_recurring = 0.0
+    rev_school_sync = 0.0
 
     for t in txns:
         gross_collections += t["amount"]
@@ -1155,7 +1191,9 @@ async def get_monthly_revenue(
         else:
             rev_recurring += net
 
-        if "lifetime" in pkg or "lifetime" in name:
+        if _is_school_sync(pkg, name):  # sold on its own, never counted as Photobook
+            rev_school_sync += net
+        elif "lifetime" in pkg or "lifetime" in name:
             pass
         elif "bundle" in pkg or "+" in name:
             rev_bundle += net
@@ -1176,7 +1214,8 @@ async def get_monthly_revenue(
             "photobook": fmt_money(rev_photobook),
             "ease_select": fmt_money(rev_ease_select),
             "combined": fmt_money(rev_bundle),
-            "lifetime": fmt_money(rev_lifetime)
+            "lifetime": fmt_money(rev_lifetime),
+            "school_sync": fmt_money(rev_school_sync)
         },
         "revenue_by_package": {
             "smart_ease_photobook": fmt_money(rev_photobook),
@@ -1577,7 +1616,7 @@ async def card_checkout(payload: Dict[str, Any] = Body(...), user: Dict[str, Any
         amount = fmt_money(option["price"])
         if amount < CARD_MIN_USD:
             raise HTTPException(status_code=400, detail=f"Card payments must be at least USD {CARD_MIN_USD:.2f}.")
-        access_days = option["months"] * DAYS_PER_MONTH
+        access_days = option.get("days") or (option["months"] * DAYS_PER_MONTH)
         email = user.get("email") or ""
         if not email:
             raise HTTPException(status_code=400, detail="Your account needs an email address before paying.")
