@@ -65,8 +65,22 @@ import threading
 import time
 
 def start_background_cloud_sync():
-    """If running locally, periodically syncs local database with the live Render Cloud server."""
+    """If running locally, periodically syncs local database with the live Render Cloud server.
+    On Render, pings its own public health endpoint every 10 minutes so the instance stays warm."""
     if os.environ.get("RENDER"):
+        def _keep_warm_worker():
+            import urllib.request
+            public_url = os.environ.get("RENDER_EXTERNAL_URL", "https://smart-ease-photobook-designer.onrender.com").rstrip("/")
+            time.sleep(30)
+            while True:
+                try:
+                    req = urllib.request.Request(f"{public_url}/health", headers={"User-Agent": "SmartEaseKeepWarm/1.0"})
+                    with urllib.request.urlopen(req, timeout=15) as _:
+                        pass
+                except Exception:
+                    pass
+                time.sleep(600)
+        threading.Thread(target=_keep_warm_worker, daemon=True).start()
         return
 
     def _sync_worker():
