@@ -2001,6 +2001,8 @@ async def register_auth_user(payload: Dict[str, Any] = Body(...)):
         sent = issue_email_code(conn, user_id, email, full_name) if can_send_email() else False
         resp = _auth_response(user_id, email, full_name, "email", conn)
         resp["verificationEmailSent"] = sent
+        if not sent and can_send_email():
+            resp["emailDeliveryWarning"] = f"We could not deliver a confirmation email to '{email}'. Please check if this email address is spelled correctly."
         return resp
     finally:
         conn.close()
@@ -2033,7 +2035,7 @@ async def login_auth_user(payload: Dict[str, Any] = Body(...)):
 
     if not user_record:
         conn.close()
-        return {"success": False, "error": "No account found with this email. Please check your credentials or create an account."}
+        return {"success": False, "error": "Wrong email address. No account was found with this email — please check the spelling of your email or create an account."}
 
     auth_prov = user_record.get("auth_provider", "email")
     if auth_prov == "google" and not user_record.get("password_hash"):
@@ -2065,7 +2067,7 @@ async def login_auth_user(payload: Dict[str, Any] = Body(...)):
 
     sub_info = get_user_subscription_info(user_id, email, conn)
 
-    # Record login and dispatch security alert
+    # Record login and dispatch security alert only for confirmed/verified emails so mistyped addresses never cause Gmail bounce emails
     try:
         from database import record_user_login
         from email_service import dispatch_login_security_email
@@ -2081,14 +2083,15 @@ async def login_auth_user(payload: Dict[str, Any] = Body(...)):
             user_id=user_id,
             conn=conn
         )
-        dispatch_login_security_email(
-            email=email,
-            full_name=fn_val,
-            product=prod_val,
-            device_hostname=dev_val,
-            auth_method="Email & Password",
-            login_time=l_rec.get("login_time")
-        )
+        if _is_email_verified(conn, user_id):
+            dispatch_login_security_email(
+                email=email,
+                full_name=fn_val,
+                product=prod_val,
+                device_hostname=dev_val,
+                auth_method="Email & Password",
+                login_time=l_rec.get("login_time")
+            )
     except Exception as log_e:
         print(f"[LoginSecurity] Log error: {log_e}")
 
@@ -2679,8 +2682,7 @@ def _find_user_by_email(conn, email: str) -> Optional[Dict[str, Any]]:
 
 @router.post("/auth/forgot-password")
 async def auth_forgot_password(payload: Dict[str, Any] = Body(...)):
-    """Emails a reset code. The answer is the same whether or not the account exists,
-    so this can't be used to find out who has an account."""
+    """Emails a reset code if the account exists; returns a clear error when the email is wrong/unregistered."""
     email = (payload.get("email") or "").strip().lower()
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="Please enter a valid email address.")
@@ -2688,18 +2690,17 @@ async def auth_forgot_password(payload: Dict[str, Any] = Body(...)):
     if not can_send_email():
         raise HTTPException(status_code=503, detail="Password reset by email isn't available yet. "
                             "If this is a Gmail address, use 'Continue with Google', or contact Smart Ease support to reset your password.")
-    generic = {"success": True, "message": "If an account exists for this email, a reset code has been sent. Check your inbox and spam folder."}
     conn = get_db_connection()
     try:
         user = _find_user_by_email(conn, email)
         if not user:
-            return generic
+            raise HTTPException(status_code=404, detail=f"Wrong email address: no Smart Ease account was found for '{email}'. Please check the spelling of your email.")
         sent_at = user.get("email_code_sent_at")
         if sent_at and (datetime.now(timezone.utc) - datetime.fromisoformat(sent_at)).total_seconds() < EMAIL_CODE_RESEND_SECONDS:
             raise HTTPException(status_code=429, detail="Please wait a minute before requesting another code.")
         if not issue_email_code(conn, user["id"], email, user.get("full_name") or "", purpose="reset"):
             raise HTTPException(status_code=502, detail="We couldn't send the email right now. Please try again shortly.")
-        return generic
+        return {"success": True, "message": f"A 6-digit password reset code has been sent to {email}. Check your inbox and spam folder."}
     finally:
         conn.close()
 
@@ -2794,14 +2795,16 @@ async def api_record_login(payload: Dict[str, Any] = Body(...), user: Dict[str, 
             user_id=user_id
         )
 
-        alert_res = dispatch_login_security_email(
-            email=email,
-            full_name=login_record.get("full_name"),
-            product=product,
-            device_hostname=device,
-            auth_method=auth_method,
-            login_time=login_record.get("login_time")
-        )
+        alert_res = {"sent": False, "reason": "email_not_verified"}
+        if bool(user.get("email_verified")) or user.get("auth_provider") == "google":
+            alert_res = dispatch_login_security_email(
+                email=email,
+                full_name=login_record.get("full_name"),
+                product=product,
+                device_hostname=device,
+                auth_method=auth_method,
+                login_time=login_record.get("login_time")
+            )
 
         return {
             "success": True,
